@@ -12,77 +12,49 @@
 #include "SdLogger.h"
 
 // ── Configurable update / log rates (milliseconds) ───────────────────────────
-#define GPS_RATE_MS     20   //  50 Hz  (UART buffer drained in bursts each cycle)
-#define IMU_RATE_MS     10   // 100 Hz
-#define BARO_RATE_MS    100   //  10 Hz  (BaroSensor also internally rate-limits)
+#define IMU_RATE_MS     10   // 100 Hz — also sets how often the GPS UART is drained
+#define BARO_RATE_MS   100   //  10 Hz
 #define LOG_RATE_MS     10   // 100 Hz
 
-// ── Peripherals — each bus is owned by exactly one core ──────────────────────
-// Core 0: Wire (I2C → IMU + Baro), Serial1 (GPS)
+// ── Peripherals ───────────────────────────────────────────────────────────────
+// Core 0 owns: Wire (I2C → IMU + Baro) and Serial1 (UART → GPS)
 static GpsSensor  gGps(Serial1);
 static ImuSensor  gImu(Wire);
 static BaroSensor gBaro;
-// Core 1: SPI1 (SD card)
+// Core 1 owns: SPI1 (SD card)
 static SdLogger   gLogger;
 
-// ── Shared sensor snapshot (written by Core 0 tasks, read by Core 1) ─────────
+// ── Shared sensor snapshot (Core 0 writes, Core 1 reads) ─────────────────────
 static SensorData        gShared;
 static SemaphoreHandle_t gDataMutex = nullptr;
 
-// ── Core 0 sensor tasks ───────────────────────────────────────────────────────
-
-// GPS — drains the UART buffer in a burst then sleeps for GPS_RATE_MS.
-// GpsSensor::update() calls _gps.read() once (1 byte); at 9600 baud we
-// accumulate ~GPS_RATE_MS bytes between wakeups, so we iterate 128 times to
-// guarantee the buffer is fully drained before sleeping.
-static void taskGps(void *) {
-    TickType_t wake  = xTaskGetTickCount();
-    SensorData local = {};
-
-    for (;;) {
-        for (int i = 0; i < 128; i++) {
-            gGps.update(local);
-        }
-
-        if (xSemaphoreTake(gDataMutex, 0) == pdTRUE) {
-            gShared.gpsFix        = local.gpsFix;
-            gShared.gpsOrigin     = local.gpsOrigin;
-            gShared.gpsAvgRemSec  = local.gpsAvgRemSec;
-            gShared.nedN          = local.nedN;
-            gShared.nedE          = local.nedE;
-            gShared.nedD          = local.nedD;
-            gShared.velN_ms       = local.velN_ms;
-            gShared.velE_ms       = local.velE_ms;
-            gShared.velD_ms       = local.velD_ms;
-            gShared.gpsSpeedMs    = local.gpsSpeedMs;
-            gShared.gpsHeadingDeg = local.gpsHeadingDeg;
-            gShared.gpsSats       = local.gpsSats;
-            gShared.gpsHDOP       = local.gpsHDOP;
-            xSemaphoreGive(gDataMutex);
-        }
-
-        vTaskDelayUntil(&wake, pdMS_TO_TICKS(GPS_RATE_MS));
-    }
-}
-
-// I2C task — handles both IMU and Baro in a single task so they never
-// contend for the Wire bus. FreeRTOS is preemptive; running IMU (higher
-// priority) and Baro (lower priority) as separate tasks allowed taskImu to
-// interrupt taskBaro mid-I2C transaction, corrupting BMP390 pressure reads
-// during SETTLING and producing a wrong ground reference pressure.
-static void taskI2C(void *) {
-    TickType_t wake     = xTaskGetTickCount();
-    SensorData imuLocal = {};
+// ── Core 0 sensor task ────────────────────────────────────────────────────────
+// All Core 0 buses are handled in a single task:
+//   - GPS UART is drained first each cycle (cheap: ~10 bytes at 9600 baud / 1 Hz)
+//   - IMU and Baro follow on I2C
+// This eliminates the separate GPS task that was prone to stack-overflow hangs
+// (Adafruit GPS parse() calls atof/atoi, which blew the old 512-word stack).
+static void taskSensors(void *) {
+    TickType_t wake      = xTaskGetTickCount();
+    SensorData gpsLocal  = {};
+    SensorData imuLocal  = {};
     SensorData baroLocal = {};
-    uint32_t lastCalMs  = 0;
-    uint32_t lastBaroMs = 0;
-    uint32_t prevUs     = micros();
+    uint32_t lastCalMs   = 0;
+    uint32_t lastBaroMs  = 0;
+    uint32_t prevUs      = micros();
 
     for (;;) {
         uint32_t nowMs = millis();
         uint32_t nowUs = micros();
 
-        // IMU — every cycle (IMU_RATE_MS)
+        // ── GPS: drain UART buffer ──────────────────────────────────────────
+        // At 9600 baud / 1 Hz, at most ~10 bytes arrive per 10 ms cycle.
+        // Looping on Serial1.available() consumes exactly what is there.
+        while (Serial1.available()) {
+            gGps.update(gpsLocal);
+        }
+
+        // ── IMU: 100 Hz ─────────────────────────────────────────────────────
         gImu.read(imuLocal);
         imuLocal.timestampMs = nowMs;
         imuLocal.dtMs        = (nowUs - prevUs) / 1000.0f;
@@ -94,25 +66,39 @@ static void taskI2C(void *) {
                                 imuLocal.calAccel, imuLocal.calMag);
         }
 
-        // Baro — every BARO_RATE_MS, sequentially after IMU (no bus conflict)
+        // ── Baro: BARO_RATE_MS ───────────────────────────────────────────────
         if (nowMs - lastBaroMs >= BARO_RATE_MS) {
             lastBaroMs = nowMs;
             gBaro.update(baroLocal);
         }
 
+        // ── Publish to shared snapshot ───────────────────────────────────────
         if (xSemaphoreTake(gDataMutex, 0) == pdTRUE) {
-            gShared.ax              = imuLocal.ax;
-            gShared.ay              = imuLocal.ay;
-            gShared.az              = imuLocal.az;
-            gShared.gx              = imuLocal.gx;
-            gShared.gy              = imuLocal.gy;
-            gShared.gz              = imuLocal.gz;
-            gShared.calSys          = imuLocal.calSys;
-            gShared.calGyro         = imuLocal.calGyro;
-            gShared.calAccel        = imuLocal.calAccel;
-            gShared.calMag          = imuLocal.calMag;
-            gShared.timestampMs     = imuLocal.timestampMs;
-            gShared.dtMs            = imuLocal.dtMs;
+            gShared.gpsFix        = gpsLocal.gpsFix;
+            gShared.gpsOrigin     = gpsLocal.gpsOrigin;
+            gShared.gpsAvgRemSec  = gpsLocal.gpsAvgRemSec;
+            gShared.nedN          = gpsLocal.nedN;
+            gShared.nedE          = gpsLocal.nedE;
+            gShared.nedD          = gpsLocal.nedD;
+            gShared.velN_ms       = gpsLocal.velN_ms;
+            gShared.velE_ms       = gpsLocal.velE_ms;
+            gShared.velD_ms       = gpsLocal.velD_ms;
+            gShared.gpsSpeedMs    = gpsLocal.gpsSpeedMs;
+            gShared.gpsHeadingDeg = gpsLocal.gpsHeadingDeg;
+            gShared.gpsSats       = gpsLocal.gpsSats;
+            gShared.gpsHDOP       = gpsLocal.gpsHDOP;
+            gShared.ax            = imuLocal.ax;
+            gShared.ay            = imuLocal.ay;
+            gShared.az            = imuLocal.az;
+            gShared.gx            = imuLocal.gx;
+            gShared.gy            = imuLocal.gy;
+            gShared.gz            = imuLocal.gz;
+            gShared.calSys        = imuLocal.calSys;
+            gShared.calGyro       = imuLocal.calGyro;
+            gShared.calAccel      = imuLocal.calAccel;
+            gShared.calMag        = imuLocal.calMag;
+            gShared.timestampMs   = imuLocal.timestampMs;
+            gShared.dtMs          = imuLocal.dtMs;
             gShared.relAltM         = baroLocal.relAltM;
             gShared.bmpPhase        = baroLocal.bmpPhase;
             gShared.bmpSettleRemSec = baroLocal.bmpSettleRemSec;
@@ -139,19 +125,13 @@ void setup() {
     if (!gImu.begin())  { Serial.println("BNO055 FAIL"); while (1); }
     if (!gBaro.begin()) { Serial.println("BMP390 FAIL"); while (1); }
 
-    // Create sensor tasks and pin each to Core 0
     TaskHandle_t h;
-    xTaskCreate(taskGps,  "GPS",  512, nullptr, 2, &h);
+    xTaskCreate(taskSensors, "SENS", 1024, nullptr, 4, &h);
     vTaskCoreAffinitySet(h, (1 << 0));
 
-    xTaskCreate(taskI2C, "I2C", 512, nullptr, 4, &h);
-    vTaskCoreAffinitySet(h, (1 << 0));
-
-    Serial.println("Core 0 tasks started");
+    Serial.println("Core 0 ready");
 }
 
-// Sensor tasks handle everything; loop() yields forever so the scheduler
-// can run the higher-priority tasks on this core.
 void loop() {
     vTaskDelay(portMAX_DELAY);
 }
@@ -164,12 +144,9 @@ void setup1() {
     if (!gLogger.begin()) {
         Serial.println("SD FAIL — logging to serial only");
     }
-    Serial.println("Core 1 logger ready");
+    Serial.println("Core 1 ready");
 }
 
-// Runs at LOG_RATE_MS using vTaskDelayUntil for precise timing.
-// The static wake variable is initialised on the first call and updated
-// by vTaskDelayUntil on every subsequent call.
 void loop1() {
     static TickType_t wake = xTaskGetTickCount();
 

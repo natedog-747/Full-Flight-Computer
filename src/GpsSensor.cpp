@@ -18,7 +18,10 @@ void GpsSensor::update(SensorData &out) {
 
     out.gpsFix        = _gps.fix;
     out.gpsSats       = _gps.satellites;
-    out.gpsHDOP       = _gps.HDOP;
+    // HDOP is only present in GGA sentences; RMC parses leave _gps.HDOP at 0.
+    // Only overwrite when the library gives a positive value so the field holds
+    // its last valid reading rather than glitching to 0 on every RMC sentence.
+    if (_gps.HDOP > 0.0f) out.gpsHDOP = _gps.HDOP;
     out.gpsSpeedMs    = _gps.speed * 0.514444f;
     out.gpsHeadingDeg = _gps.angle;
 
