@@ -21,13 +21,17 @@ struct SensorData {
     uint32_t bmpSettleRemSec = 0;
 
     // GPS — NED frame (metres from averaged origin)
-    bool    gpsFix        = false;
-    bool    gpsOrigin     = false;
-    float   nedN = 0, nedE = 0, nedD = 0;
-    float   gpsSpeedMs    = 0;
-    float   gpsHeadingDeg = 0;
-    uint8_t gpsSats       = 0;
-    float   gpsHDOP       = 0;
+    bool     gpsFix        = false;
+    bool     gpsOrigin     = false;  // true once 10-s origin average is locked
+    uint32_t gpsAvgRemSec  = 0;      // seconds left in origin-averaging window
+    float    nedN = 0, nedE = 0, nedD = 0;
+    // NED velocity components derived from speed/course over ground.
+    // velD is always 0 — vertical velocity is not in standard NMEA.
+    float    velN_ms = 0, velE_ms = 0, velD_ms = 0;
+    float    gpsSpeedMs    = 0;   // overall speed over ground (m/s)
+    float    gpsHeadingDeg = 0;
+    uint8_t  gpsSats       = 0;
+    float    gpsHDOP       = 0;
 
     // Diagnostics
     float dtMs = 0;   // true sensor loop period (ms), measured start-to-start

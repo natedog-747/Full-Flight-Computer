@@ -47,9 +47,13 @@ static void taskGps(void *) {
         if (xSemaphoreTake(gDataMutex, 0) == pdTRUE) {
             gShared.gpsFix        = local.gpsFix;
             gShared.gpsOrigin     = local.gpsOrigin;
+            gShared.gpsAvgRemSec  = local.gpsAvgRemSec;
             gShared.nedN          = local.nedN;
             gShared.nedE          = local.nedE;
             gShared.nedD          = local.nedD;
+            gShared.velN_ms       = local.velN_ms;
+            gShared.velE_ms       = local.velE_ms;
+            gShared.velD_ms       = local.velD_ms;
             gShared.gpsSpeedMs    = local.gpsSpeedMs;
             gShared.gpsHeadingDeg = local.gpsHeadingDeg;
             gShared.gpsSats       = local.gpsSats;
