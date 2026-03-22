@@ -28,5 +28,7 @@ private:
 
     static constexpr uint32_t WARMUP_MS = 2000;
     static constexpr uint32_t SETTLE_MS = 10000;
-    static constexpr float    EMA_ALPHA = 0.01f;
+    static constexpr float    EMA_ALPHA = 0.10f;  // 0.01 left 36.6% weight on the
+                                                  // initial reading after 10 s;
+                                                  // 0.10 reduces that to 0.003%
 };

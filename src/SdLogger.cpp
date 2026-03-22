@@ -5,9 +5,11 @@
 
 bool SdLogger::begin() {
     Serial.print("Initializing SD card...");
-    while (!_sd.begin(_config)) {
-        Serial.println("initialization failed! Retrying...");
-        delay(1000);
+    for (int attempt = 1; attempt <= 3; attempt++) {
+        if (_sd.begin(_config)) break;
+        Serial.printf("initialization failed (attempt %d/3)\n", attempt);
+        if (attempt == 3) return false;
+        delay(500);
     }
     Serial.println("initialization done.");
 
