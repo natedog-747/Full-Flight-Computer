@@ -8,20 +8,25 @@ void KalmanFilter::reset() {
     mQuat[0] = 1.0f; mQuat[1] = mQuat[2] = mQuat[3] = 0.0f;
     mBiasAccel[0] = mBiasAccel[1] = mBiasAccel[2] = 0.0f;
     mBiasGyro[0]  = mBiasGyro[1]  = mBiasGyro[2]  = 0.0f;
-    mBaroBias = 0.0f;
+    mBaroBias     = 0.0f;
+    mGpsBiasPos[0] = mGpsBiasPos[1] = mGpsBiasPos[2] = 0.0f;
+    mGpsBiasVel[0] = mGpsBiasVel[1] = 0.0f;
 
     memset(mCov, 0, sizeof(mCov));
 
-    // Initial diagonal covariance — indices [δp δv δθ δab δwb δbaro]
-    const float diag[16] = {
-        0.0f,   0.0f,   0.0f,    // δp  — start position known
-        0.0f,   0.0f,   0.0f,    // δv  — start velocity known
+    // Initial diagonal covariance (21-D error state)
+    // [δp δv δθ δab δwb δbaro δbgp δbgv]
+    const float diag[21] = {
+        1.0f,   1.0f,   1.0f,    // δp  — ~1 m uncertainty from GPS origin average
+        0.01f,  0.01f,  0.01f,   // δv  — ~0.1 m/s uncertainty at rest
         0.1f,   0.1f,   1.0f,    // δθ  — roll/pitch small, yaw unknown
         1e-4f,  1e-4f,  1e-4f,   // δab — small initial accel bias uncertainty
         1e-6f,  1e-6f,  1e-6f,   // δwb — small initial gyro bias uncertainty
-        1.0f                     // δb  — baro bias unknown (1 m std)
+        1.0f,                    // δbb — baro bias unknown (1 m std)
+        1.0f,   1.0f,   1.0f,    // δbgp — GPS pos bias (1 m std, not 5 m)
+        0.01f,  0.01f            // δbgv — GPS vel bias (0.1 m/s std)
     };
-    for (int i = 0; i < 16; i++) mCov[i][i] = diag[i];
+    for (int i = 0; i < 21; i++) mCov[i][i] = diag[i];
 
     mInitPhase  = InitPhase::ACCEL_AVG;
     mAccumGx    = 0; mAccumGy = 0; mAccumGz = 0;
@@ -68,8 +73,8 @@ void KalmanFilter::buildDCM(float R[3][3]) const {
 
 // ── symmetrizeCov ─────────────────────────────────────────────────────────────
 void KalmanFilter::symmetrizeCov() {
-    for (int i = 0; i < 16; i++)
-        for (int j = i+1; j < 16; j++) {
+    for (int i = 0; i < 21; i++)
+        for (int j = i+1; j < 21; j++) {
             float avg = 0.5f * (mCov[i][j] + mCov[j][i]);
             mCov[i][j] = mCov[j][i] = avg;
         }
@@ -178,12 +183,11 @@ void KalmanFilter::predict(float gx, float gy, float gz,
     //   δv_dot = -R·[ac]×·δθ - R·δab     → Fc[3:6, 6:9] = -R·[ac]×, Fc[3:6, 9:12] = -R
     //   δθ_dot = -[wc]×·δθ - δwb         → Fc[6:9, 6:9] = -[wc]×,   Fc[6:9, 12:15] = -I
     //   δab_dot = δwb_dot = δb_dot = 0
+    //   δbgp_dot = δbgv_dot = 0          (GPS bias: pure random walks, no coupling)
     //
     // First-order discrete update: P += (Fc·P + P·Fc^T)·dt + Qd
 
     // -R·[ac]× block (Sola eq.269, δv/δθ coupling):
-    //   [ac]× col j:  j=0: [0,acz,-acy], j=1: [-acz,0,acx], j=2: [acy,-acx,0]
-    //   Mvt[i][j] = -(R[i][0]*[ac]×[0][j] + R[i][1]*[ac]×[1][j] + R[i][2]*[ac]×[2][j])
     float Mvt[3][3];
     for (int i = 0; i < 3; i++) {
         Mvt[i][0] = -(R[i][1]*acz - R[i][2]*acy);
@@ -192,26 +196,25 @@ void KalmanFilter::predict(float gx, float gy, float gz,
     }
 
     // -[wc]× block (δθ/δθ coupling):
-    //   [wc]× = [[0,-wz,wy],[wz,0,-wx],[-wy,wx,0]]  so -[wc]× flips signs:
     float Mtt[3][3] = {
         { 0.0f,  wz, -wy},
         {  -wz, 0.0f,  wx},
         {  wy, -wx, 0.0f}
     };
 
-    // Accumulate dP = Fc·P + P·Fc^T using sparse row blocks of Fc.
-    // We compute AP = Fc·P first, then add AP + AP^T to P.
-    float dP[16][16] = {};
+    // Accumulate dP = Fc·P using sparse row blocks of Fc.
+    // GPS bias rows (16-20) have zero Fc entries — no contribution.
+    float dP[21][21] = {};
 
     // Fc block [δp, δv] = I  →  dP[0:3, :] += P[3:6, :]
-    for (int j = 0; j < 16; j++) {
+    for (int j = 0; j < 21; j++) {
         dP[0][j] += mCov[3][j];
         dP[1][j] += mCov[4][j];
         dP[2][j] += mCov[5][j];
     }
 
     // Fc block [δv, δθ] = Mvt, [δv, δab] = -R  →  dP[3:6, :]
-    for (int j = 0; j < 16; j++) {
+    for (int j = 0; j < 21; j++) {
         for (int k = 0; k < 3; k++) {
             dP[3][j] += Mvt[0][k] * mCov[6+k][j] - R[0][k] * mCov[9+k][j];
             dP[4][j] += Mvt[1][k] * mCov[6+k][j] - R[1][k] * mCov[9+k][j];
@@ -220,7 +223,7 @@ void KalmanFilter::predict(float gx, float gy, float gz,
     }
 
     // Fc block [δθ, δθ] = Mtt, [δθ, δwb] = -I  →  dP[6:9, :]
-    for (int j = 0; j < 16; j++) {
+    for (int j = 0; j < 21; j++) {
         for (int k = 0; k < 3; k++) {
             dP[6][j] += Mtt[0][k] * mCov[6+k][j];
             dP[7][j] += Mtt[1][k] * mCov[6+k][j];
@@ -232,33 +235,34 @@ void KalmanFilter::predict(float gx, float gy, float gz,
     }
 
     // Apply P += (dP + dP^T) * dt  (dP^T is the P*Fc^T term)
-    for (int i = 0; i < 16; i++)
-        for (int j = 0; j < 16; j++)
+    for (int i = 0; i < 21; i++)
+        for (int j = 0; j < 21; j++)
             mCov[i][j] += (dP[i][j] + dP[j][i]) * dt;
 
     // Additive discrete process noise Qd (diagonal):
-    //   δv: accel white noise contributes (σa·dt)² per axis
-    //   δθ: gyro white noise contributes (σw·dt)² per axis
-    //   δab, δwb, δb: random-walk noise × dt
-    float qa2  = SIGMA_ACCEL * SIGMA_ACCEL * dt;
-    float qw2  = SIGMA_GYRO  * SIGMA_GYRO  * dt;
-    float qab2 = SIGMA_ACCEL_WALK * SIGMA_ACCEL_WALK * dt;
-    float qwb2 = SIGMA_GYRO_WALK  * SIGMA_GYRO_WALK  * dt;
-    float qbb2 = SIGMA_BARO_WALK  * SIGMA_BARO_WALK  * dt;
+    float qa2   = SIGMA_ACCEL        * SIGMA_ACCEL        * dt;
+    float qw2   = SIGMA_GYRO         * SIGMA_GYRO         * dt;
+    float qab2  = SIGMA_ACCEL_WALK   * SIGMA_ACCEL_WALK   * dt;
+    float qwb2  = SIGMA_GYRO_WALK    * SIGMA_GYRO_WALK    * dt;
+    float qbb2  = SIGMA_BARO_WALK    * SIGMA_BARO_WALK    * dt;
+    float qgpp2 = SIGMA_GPS_POS_WALK * SIGMA_GPS_POS_WALK * dt;
+    float qgpv2 = SIGMA_GPS_VEL_WALK * SIGMA_GPS_VEL_WALK * dt;
 
-    mCov[3][3]   += qa2;  mCov[4][4]   += qa2;  mCov[5][5]   += qa2;
-    mCov[6][6]   += qw2;  mCov[7][7]   += qw2;  mCov[8][8]   += qw2;
-    mCov[9][9]   += qab2; mCov[10][10] += qab2; mCov[11][11] += qab2;
-    mCov[12][12] += qwb2; mCov[13][13] += qwb2; mCov[14][14] += qwb2;
+    mCov[3][3]   += qa2;   mCov[4][4]   += qa2;   mCov[5][5]   += qa2;
+    mCov[6][6]   += qw2;   mCov[7][7]   += qw2;   mCov[8][8]   += qw2;
+    mCov[9][9]   += qab2;  mCov[10][10] += qab2;  mCov[11][11] += qab2;
+    mCov[12][12] += qwb2;  mCov[13][13] += qwb2;  mCov[14][14] += qwb2;
     mCov[15][15] += qbb2;
+    mCov[16][16] += qgpp2; mCov[17][17] += qgpp2; mCov[18][18] += qgpp2;
+    mCov[19][19] += qgpv2; mCov[20][20] += qgpv2;
 
     symmetrizeCov();
 }
 
 // ── injectErrorState ──────────────────────────────────────────────────────────
-// Adds error-state correction dx[16] to nominal state.
+// Adds error-state correction dx[21] to nominal state.
 // Attitude uses multiplicative quaternion update (small-angle rotation).
-void KalmanFilter::injectErrorState(const float dx[16]) {
+void KalmanFilter::injectErrorState(const float dx[21]) {
     mPos[0] += dx[0]; mPos[1] += dx[1]; mPos[2] += dx[2];
     mVel[0] += dx[3]; mVel[1] += dx[4]; mVel[2] += dx[5];
 
@@ -271,16 +275,17 @@ void KalmanFilter::injectErrorState(const float dx[16]) {
     mQuat[3] = w*dqz + x*dqy - y*dqx + z*dqw;
     normalizeQuat();
 
-    mBiasAccel[0] += dx[9];  mBiasAccel[1] += dx[10]; mBiasAccel[2] += dx[11];
-    mBiasGyro[0]  += dx[12]; mBiasGyro[1]  += dx[13]; mBiasGyro[2]  += dx[14];
-    mBaroBias     += dx[15];
+    mBiasAccel[0]  += dx[9];  mBiasAccel[1]  += dx[10]; mBiasAccel[2]  += dx[11];
+    mBiasGyro[0]   += dx[12]; mBiasGyro[1]   += dx[13]; mBiasGyro[2]   += dx[14];
+    mBaroBias      += dx[15];
+    mGpsBiasPos[0] += dx[16]; mGpsBiasPos[1] += dx[17]; mGpsBiasPos[2] += dx[18];
+    mGpsBiasVel[0] += dx[19]; mGpsBiasVel[1] += dx[20];
 }
 
 // ── mat5Invert ────────────────────────────────────────────────────────────────
 // Gauss-Jordan elimination with partial pivoting on a 5×5 matrix.
 // Returns false if matrix is singular (pivot < 1e-12).
 bool KalmanFilter::mat5Invert(float A[5][5], float Ainv[5][5]) {
-    // Augmented matrix [A | I] stored as aug[5][10]
     float aug[5][10];
     for (int i = 0; i < 5; i++) {
         for (int j = 0; j < 5; j++) aug[i][j] = A[i][j];
@@ -288,27 +293,23 @@ bool KalmanFilter::mat5Invert(float A[5][5], float Ainv[5][5]) {
     }
 
     for (int col = 0; col < 5; col++) {
-        // Partial pivot — find largest magnitude in this column
         int pivot = col;
         float best = fabsf(aug[col][col]);
         for (int row = col+1; row < 5; row++) {
             float v = fabsf(aug[row][col]);
             if (v > best) { best = v; pivot = row; }
         }
-        if (best < 1e-12f) return false;  // singular
+        if (best < 1e-12f) return false;
 
-        // Swap rows
         if (pivot != col) {
             for (int j = 0; j < 10; j++) {
                 float tmp = aug[col][j]; aug[col][j] = aug[pivot][j]; aug[pivot][j] = tmp;
             }
         }
 
-        // Scale pivot row to 1
         float inv = 1.0f / aug[col][col];
         for (int j = 0; j < 10; j++) aug[col][j] *= inv;
 
-        // Eliminate column in all other rows
         for (int row = 0; row < 5; row++) {
             if (row == col) continue;
             float f = aug[row][col];
@@ -323,62 +324,80 @@ bool KalmanFilter::mat5Invert(float A[5][5], float Ainv[5][5]) {
 }
 
 // ── updateFromGPS ─────────────────────────────────────────────────────────────
-// 5-measurement update: posN, posE, posD, velN, velE (no velD — not in NMEA).
+// 5-measurement update: posN, posE, posD, velN, velE.
+// H (5×21): each measurement touches one state column + one GPS-bias column:
+//   m=0..2  posN/E/D:  col ca[m]= m,    col cb[m]= 16+m  (δp + δbgp)
+//   m=3..4  velN/E:    col ca[m]= m,    col cb[m]= 19+m-3 (δv + δbgv)
 // Followed by optional 1-measurement yaw update from course-over-ground.
-// Only runs in READY phase.
 void KalmanFilter::updateFromGPS(float posN, float posE, float posD,
                                   float velN, float velE,
                                   float hdop, float headingDeg, float speedMs) {
     if (mInitPhase != InitPhase::READY) return;
 
     // ── Part 1: position + velocity update (5D) ────────────────────────────
-    float rp = SIGMA_GPS_POS * hdop;
-    float rv = SIGMA_GPS_VEL * hdop;
+    // Clamp HDOP to minimum 1.0: prevents rp2=rv2=0 when GGA not yet received,
+    // which would drive GPS-bias covariance to 0 and make S singular on next update.
+    float hdopEff = (hdop < 1.0f) ? 1.0f : hdop;
+    float rp = SIGMA_GPS_POS * hdopEff;
+    float rv = SIGMA_GPS_VEL * hdopEff;
     float rp2 = rp*rp, rv2 = rv*rv;
 
-    // Innovation: measured - nominal
+    // Column-index pairs for sparse H:  H[m, ca[m]]=1, H[m, cb[m]]=1
+    const int ca[5] = {0, 1, 2, 3, 4};          // δp_N/E/D, δv_N/E
+    const int cb[5] = {16, 17, 18, 19, 20};      // δbgp_N/E/D, δbgv_N/E
+
+    // Innovation: measurement - (nominal state + GPS bias estimate)
     float innov[5] = {
-        posN - mPos[0], posE - mPos[1], posD - mPos[2],
-        velN - mVel[0], velE - mVel[1]
+        posN - mPos[0] - mGpsBiasPos[0],
+        posE - mPos[1] - mGpsBiasPos[1],
+        posD - mPos[2] - mGpsBiasPos[2],
+        velN - mVel[0] - mGpsBiasVel[0],
+        velE - mVel[1] - mGpsBiasVel[1]
     };
 
+    // HP[m][j] = (H·P)[m][j] = P[ca[m]][j] + P[cb[m]][j]
+    // Saved BEFORE any P modification to avoid read-back corruption.
+    float HP[5][21];
+    for (int m = 0; m < 5; m++)
+        for (int j = 0; j < 21; j++)
+            HP[m][j] = mCov[ca[m]][j] + mCov[cb[m]][j];
+
     // S = H·P·H^T + R  (5×5)
-    // H selects state indices {0,1,2,3,4} → S = P[0:5,0:5] + diag(rp2,rp2,rp2,rv2,rv2)
+    // S[m1][m2] = HP[m1][ca[m2]] + HP[m1][cb[m2]]
     float S[5][5];
-    for (int i = 0; i < 5; i++)
-        for (int j = 0; j < 5; j++)
-            S[i][j] = mCov[i][j];
+    for (int m1 = 0; m1 < 5; m1++)
+        for (int m2 = 0; m2 < 5; m2++)
+            S[m1][m2] = HP[m1][ca[m2]] + HP[m1][cb[m2]];
     S[0][0] += rp2; S[1][1] += rp2; S[2][2] += rp2;
     S[3][3] += rv2; S[4][4] += rv2;
 
     float Sinv[5][5];
-    if (!mat5Invert(S, Sinv)) return;  // singular — skip update
+    if (!mat5Invert(S, Sinv)) return;
 
-    // K = P·H^T · Sinv  (16×5)
-    // P·H^T selects the first 5 columns of P: (P·H^T)[i,m] = P[i, m] for m=0..4
-    float K[16][5];
-    for (int i = 0; i < 16; i++)
+    // PHT[i][m] = (P·H^T)[i][m] = P[i][ca[m]] + P[i][cb[m]]
+    float PHT[21][5];
+    for (int i = 0; i < 21; i++)
+        for (int m = 0; m < 5; m++)
+            PHT[i][m] = mCov[i][ca[m]] + mCov[i][cb[m]];
+
+    // K = PHT · Sinv  (21×5)
+    float K[21][5];
+    for (int i = 0; i < 21; i++)
         for (int m = 0; m < 5; m++) {
             float s = 0.0f;
-            for (int k = 0; k < 5; k++) s += mCov[i][k] * Sinv[k][m];
+            for (int k = 0; k < 5; k++) s += PHT[i][k] * Sinv[k][m];
             K[i][m] = s;
         }
 
-    // Error state: dx = K · innov  (16×1)
-    float dx[16] = {};
-    for (int i = 0; i < 16; i++)
+    // dx = K · innov  (21×1)
+    float dx[21] = {};
+    for (int i = 0; i < 21; i++)
         for (int m = 0; m < 5; m++)
             dx[i] += K[i][m] * innov[m];
 
-    // Covariance: P = (I - K·H)·P = P - K·(H·P)
-    // Save H·P (rows 0..4 of P) BEFORE modifying P, so later rows use original values.
-    float HP[5][16];
-    for (int m = 0; m < 5; m++)
-        for (int j = 0; j < 16; j++)
-            HP[m][j] = mCov[m][j];
-
-    for (int i = 0; i < 16; i++)
-        for (int j = 0; j < 16; j++) {
+    // P = P - K·(H·P) = P - K·HP
+    for (int i = 0; i < 21; i++)
+        for (int j = 0; j < 21; j++) {
             float kHP = 0.0f;
             for (int m = 0; m < 5; m++) kHP += K[i][m] * HP[m][j];
             mCov[i][j] -= kHP;
@@ -394,27 +413,23 @@ void KalmanFilter::updateFromGPS(float posN, float posE, float posD,
     float nomYaw = atan2f(2.0f*(mQuat[0]*mQuat[3] + mQuat[1]*mQuat[2]),
                           1.0f - 2.0f*(mQuat[2]*mQuat[2] + mQuat[3]*mQuat[3]));
     float dPsi = yawRad - nomYaw;
-    // Wrap to [-π, π]
     while (dPsi >  3.14159265f) dPsi -= 6.28318530f;
     while (dPsi < -3.14159265f) dPsi += 6.28318530f;
 
-    // H_yaw (1×16): index 8 (δθ_z)
-    // S_yaw = P[8,8] + R_yaw
+    // H_yaw (1×21): index 8 (δθ_z) only
     float ryaw = SIGMA_GPS_YAW * (3.14159265f / 180.0f);
     float Syaw = mCov[8][8] + ryaw*ryaw;
     if (Syaw < 1e-9f) return;
 
-    // K_yaw = P[:,8] / Syaw  (16×1)
-    // Save row 8 of P before the update — the P update loop modifies that row at i=8,
-    // which would corrupt the H·P term for subsequent rows.
-    float P8[16];
-    for (int j = 0; j < 16; j++) P8[j] = mCov[8][j];
+    // Save H·P = row 8 of P before the update.
+    float P8[21];
+    for (int j = 0; j < 21; j++) P8[j] = mCov[8][j];
 
-    float dxYaw[16] = {};
-    for (int i = 0; i < 16; i++) {
+    float dxYaw[21] = {};
+    for (int i = 0; i < 21; i++) {
         float Ki = mCov[i][8] / Syaw;
         dxYaw[i] = Ki * dPsi;
-        for (int j = 0; j < 16; j++) mCov[i][j] -= Ki * P8[j];
+        for (int j = 0; j < 21; j++) mCov[i][j] -= Ki * P8[j];
     }
     symmetrizeCov();
 
@@ -424,8 +439,7 @@ void KalmanFilter::updateFromGPS(float posN, float posE, float posD,
 // ── updateFromBarometer ───────────────────────────────────────────────────────
 // 1-measurement update: altM = altitude above ground, positive-up (m).
 // Nominal output: alt = -posD + baroBias.
-// H (1×16): index 2 → -1, index 15 → +1.
-// Only runs in READY phase.
+// H (1×21): index 2 → -1, index 15 → +1.
 void KalmanFilter::updateFromBarometer(float altM) {
     if (mInitPhase != InitPhase::READY) return;
 
@@ -437,17 +451,15 @@ void KalmanFilter::updateFromBarometer(float altM) {
                   + SIGMA_BARO_MEAS * SIGMA_BARO_MEAS;
     if (Sbaro < 1e-9f) return;
 
-    // K = P·H^T / Sbaro  (16×1): P·H^T[:,0] = -P[:,2] + P[:,15]
-    // Save H·P = -P[2,:] + P[15,:] before the update — the loop modifies rows 2 and 15
-    // (when i=2 and i=15), which would corrupt the H·P term used by later rows.
-    float HP_baro[16];
-    for (int j = 0; j < 16; j++) HP_baro[j] = -mCov[2][j] + mCov[15][j];
+    // Save H·P = -P[2,:] + P[15,:] before the update to prevent read-back corruption.
+    float HP_baro[21];
+    for (int j = 0; j < 21; j++) HP_baro[j] = -mCov[2][j] + mCov[15][j];
 
-    float dxBaro[16] = {};
-    for (int i = 0; i < 16; i++) {
+    float dxBaro[21] = {};
+    for (int i = 0; i < 21; i++) {
         float Ki = (-mCov[i][2] + mCov[i][15]) / Sbaro;
         dxBaro[i] = Ki * innov;
-        for (int j = 0; j < 16; j++) mCov[i][j] -= Ki * HP_baro[j];
+        for (int j = 0; j < 21; j++) mCov[i][j] -= Ki * HP_baro[j];
     }
     symmetrizeCov();
 
@@ -481,4 +493,12 @@ void KalmanFilter::getVelocity(float &velN, float &velE, float &velD) const {
 
 void KalmanFilter::getGyroBias(float &bgx, float &bgy, float &bgz) const {
     bgx = mBiasGyro[0]; bgy = mBiasGyro[1]; bgz = mBiasGyro[2];
+}
+
+void KalmanFilter::getGpsBiasPos(float &bN, float &bE, float &bD) const {
+    bN = mGpsBiasPos[0]; bE = mGpsBiasPos[1]; bD = mGpsBiasPos[2];
+}
+
+void KalmanFilter::getGpsBiasVel(float &bN, float &bE) const {
+    bN = mGpsBiasVel[0]; bE = mGpsBiasVel[1];
 }

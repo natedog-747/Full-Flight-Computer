@@ -103,6 +103,8 @@ static void taskSensors(void *) {
             gKF.getVelocity(imuLocal.kfVelN, imuLocal.kfVelE, imuLocal.kfVelD);
             imuLocal.kfInitPhase = (uint8_t)gKF.getInitPhase();
             imuLocal.kfBaroBias  = gKF.getBaroBias();
+            gKF.getGpsBiasPos(imuLocal.kfGpsBiasN, imuLocal.kfGpsBiasE, imuLocal.kfGpsBiasD);
+            gKF.getGpsBiasVel(imuLocal.kfGpsBiasVelN, imuLocal.kfGpsBiasVelE);
         }
 
         if (nowMs - lastCalMs >= 1000) {
@@ -166,6 +168,11 @@ static void taskSensors(void *) {
             gShared.kfVelE        = imuLocal.kfVelE;
             gShared.kfVelD        = imuLocal.kfVelD;
             gShared.kfBaroBias    = imuLocal.kfBaroBias;
+            gShared.kfGpsBiasN    = imuLocal.kfGpsBiasN;
+            gShared.kfGpsBiasE    = imuLocal.kfGpsBiasE;
+            gShared.kfGpsBiasD    = imuLocal.kfGpsBiasD;
+            gShared.kfGpsBiasVelN = imuLocal.kfGpsBiasVelN;
+            gShared.kfGpsBiasVelE = imuLocal.kfGpsBiasVelE;
             gShared.relAltM         = baroLocal.relAltM;
             gShared.bmpPhase        = baroLocal.bmpPhase;
             gShared.bmpSettleRemSec = baroLocal.bmpSettleRemSec;

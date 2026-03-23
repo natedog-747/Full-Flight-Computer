@@ -27,7 +27,8 @@ bool SdLogger::begin() {
                       "gpsFix,gpsOrigin,gpsAvgRemSec,nedN,nedE,nedD,"
                       "velN_ms,velE_ms,velD_ms,gpsSpeedMs,gpsHeadingDeg,gpsSats,gpsHDOP,"
                       "dtMs,qw,qx,qy,qz,roll,pitch,yaw,"
-                      "kfPosN,kfPosE,kfPosD,kfVelN,kfVelE,kfVelD,kfBaroBias");
+                      "kfPosN,kfPosE,kfPosD,kfVelN,kfVelE,kfVelD,kfBaroBias,"
+                      "kfGpsBiasN,kfGpsBiasE,kfGpsBiasD,kfGpsBiasVelN,kfGpsBiasVelE");
         _file.close();
         _ready = true;
     } else {
@@ -52,7 +53,8 @@ void SdLogger::log(const SensorData &data) {
                 "%u,%u,%lu,%.3f,%.3f,%.3f,"
                 "%.3f,%.3f,%.3f,%.3f,%.3f,%u,%.2f,"
                 "%.3f,%.4f,%.4f,%.4f,%.4f,%.2f,%.2f,%.2f,"
-                "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+                "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,"
+                "%.3f,%.3f,%.3f,%.3f,%.3f\n",
                 data.timestampMs,
                 data.ax,  data.ay,  data.az,
                 data.gx,  data.gy,  data.gz,
@@ -67,7 +69,9 @@ void SdLogger::log(const SensorData &data) {
                 data.roll, data.pitch, data.yaw,
                 data.kfPosN, data.kfPosE, data.kfPosD,
                 data.kfVelN, data.kfVelE, data.kfVelD,
-                data.kfBaroBias);
+                data.kfBaroBias,
+                data.kfGpsBiasN, data.kfGpsBiasE, data.kfGpsBiasD,
+                data.kfGpsBiasVelN, data.kfGpsBiasVelE);
             _file.close();
             _rowCount++;
         }
@@ -100,11 +104,14 @@ void SdLogger::log(const SensorData &data) {
         // KF navigation line
         Serial.printf(
             "%s [KF:NAV] N=%+8.3fm E=%+8.3fm D=%+7.3fm | "
-            "vN=%+6.2f vE=%+6.2f vD=%+6.2f m/s | baroBias=%+.3fm\n",
+            "vN=%+6.2f vE=%+6.2f vD=%+6.2f m/s | baroBias=%+.3fm | "
+            "gpsBiasPos=[%+.3f %+.3f %+.3f]m gpsBiasVel=[%+.3f %+.3f]m/s\n",
             tag,
             data.kfPosN, data.kfPosE, data.kfPosD,
             data.kfVelN, data.kfVelE, data.kfVelD,
-            data.kfBaroBias);
+            data.kfBaroBias,
+            data.kfGpsBiasN, data.kfGpsBiasE, data.kfGpsBiasD,
+            data.kfGpsBiasVelN, data.kfGpsBiasVelE);
 
         // GPS line
         if (!data.gpsFix) {
