@@ -10,6 +10,7 @@
 #include "ImuSensor.h"
 #include "BaroSensor.h"
 #include "SdLogger.h"
+#include "KalmanFilter.h"
 
 // ── Configurable update / log rates (milliseconds) ───────────────────────────
 #define IMU_RATE_MS     10   // 100 Hz — also sets how often the GPS UART is drained
@@ -23,6 +24,8 @@ static ImuSensor  gImu(Wire);
 static BaroSensor gBaro;
 // Core 1 owns: SPI1 (SD card)
 static SdLogger   gLogger;
+// Kalman filter — owned exclusively by Core 0 sensor task (no mutex needed)
+static KalmanFilter gKF;
 
 // ── Shared sensor snapshot (Core 0 writes, Core 1 reads) ─────────────────────
 static SensorData        gShared;
@@ -41,6 +44,7 @@ static void taskSensors(void *) {
     SensorData baroLocal = {};
     uint32_t lastCalMs   = 0;
     uint32_t lastBaroMs  = 0;
+    bool     baroFresh   = false;
     uint32_t prevUs      = micros();
 
     for (;;) {
@@ -54,11 +58,52 @@ static void taskSensors(void *) {
             gGps.update(gpsLocal);
         }
 
+        // GPS Kalman measurement update — only when a fresh NED fix is available
+        if (gpsLocal.gpsNewData && gpsLocal.gpsOrigin) {
+            gKF.updateFromGPS(gpsLocal.nedN, gpsLocal.nedE, gpsLocal.nedD,
+                              gpsLocal.velN_ms, gpsLocal.velE_ms,
+                              gpsLocal.gpsHDOP,
+                              gpsLocal.gpsHeadingDeg, gpsLocal.gpsSpeedMs);
+            gpsLocal.gpsNewData = false;
+        }
+
         // ── IMU: 100 Hz ─────────────────────────────────────────────────────
         gImu.read(imuLocal);
         imuLocal.timestampMs = nowMs;
         imuLocal.dtMs        = (nowUs - prevUs) / 1000.0f;
         prevUs               = nowUs;
+
+        // ── NED axis flip + KF update ────────────────────────────────────────
+        // Sensor frame: x=nose, y=left wing, z=up
+        // NED frame:    x=nose, y=right wing, z=down  →  negate y and z
+        {
+            const float kDeg2Rad = 3.14159265f / 180.0f;
+            float gxNed =  imuLocal.gx * kDeg2Rad;
+            float gyNed = -imuLocal.gy * kDeg2Rad;
+            float gzNed = -imuLocal.gz * kDeg2Rad;
+            float axNed =  imuLocal.ax;
+            float ayNed = -imuLocal.ay;
+            float azNed = -imuLocal.az;
+
+            // Gyro + accel averaging for bias/roll/pitch init (phase-guarded inside)
+            gKF.feedImu(gxNed, gyNed, gzNed, axNed, ayNed, azNed);
+
+            // GPS heading for yaw initialisation (phase-guarded inside)
+            if (gpsLocal.gpsFix) {
+                gKF.feedGpsHeading(gpsLocal.gpsSpeedMs, gpsLocal.gpsHeadingDeg);
+            }
+
+            // Gyro integration — no-op during ACCEL_AVG phase
+            gKF.predict(gxNed, gyNed, gzNed, axNed, ayNed, azNed,
+                        imuLocal.dtMs * 0.001f);
+
+            gKF.getQuaternion(imuLocal.qw, imuLocal.qx, imuLocal.qy, imuLocal.qz);
+            gKF.getEulerDeg(imuLocal.roll, imuLocal.pitch, imuLocal.yaw);
+            gKF.getPosition(imuLocal.kfPosN, imuLocal.kfPosE, imuLocal.kfPosD);
+            gKF.getVelocity(imuLocal.kfVelN, imuLocal.kfVelE, imuLocal.kfVelD);
+            imuLocal.kfInitPhase = (uint8_t)gKF.getInitPhase();
+            imuLocal.kfBaroBias  = gKF.getBaroBias();
+        }
 
         if (nowMs - lastCalMs >= 1000) {
             lastCalMs = nowMs;
@@ -67,9 +112,16 @@ static void taskSensors(void *) {
         }
 
         // ── Baro: BARO_RATE_MS ───────────────────────────────────────────────
+        baroFresh = false;
         if (nowMs - lastBaroMs >= BARO_RATE_MS) {
             lastBaroMs = nowMs;
             gBaro.update(baroLocal);
+            baroFresh = true;
+        }
+
+        // Baro Kalman measurement update — only when locked and fresh
+        if (baroFresh && baroLocal.bmpPhase == BmpPhase::LOCKED) {
+            gKF.updateFromBarometer(baroLocal.relAltM);
         }
 
         // ── Publish to shared snapshot ───────────────────────────────────────
@@ -99,6 +151,21 @@ static void taskSensors(void *) {
             gShared.calMag        = imuLocal.calMag;
             gShared.timestampMs   = imuLocal.timestampMs;
             gShared.dtMs          = imuLocal.dtMs;
+            gShared.kfInitPhase   = imuLocal.kfInitPhase;
+            gShared.qw            = imuLocal.qw;
+            gShared.qx            = imuLocal.qx;
+            gShared.qy            = imuLocal.qy;
+            gShared.qz            = imuLocal.qz;
+            gShared.roll          = imuLocal.roll;
+            gShared.pitch         = imuLocal.pitch;
+            gShared.yaw           = imuLocal.yaw;
+            gShared.kfPosN        = imuLocal.kfPosN;
+            gShared.kfPosE        = imuLocal.kfPosE;
+            gShared.kfPosD        = imuLocal.kfPosD;
+            gShared.kfVelN        = imuLocal.kfVelN;
+            gShared.kfVelE        = imuLocal.kfVelE;
+            gShared.kfVelD        = imuLocal.kfVelD;
+            gShared.kfBaroBias    = imuLocal.kfBaroBias;
             gShared.relAltM         = baroLocal.relAltM;
             gShared.bmpPhase        = baroLocal.bmpPhase;
             gShared.bmpSettleRemSec = baroLocal.bmpSettleRemSec;
@@ -126,7 +193,7 @@ void setup() {
     if (!gBaro.begin()) { Serial.println("BMP390 FAIL"); while (1); }
 
     TaskHandle_t h;
-    xTaskCreate(taskSensors, "SENS", 1024, nullptr, 4, &h);
+    xTaskCreate(taskSensors, "SENS", 2048, nullptr, 4, &h);
     vTaskCoreAffinitySet(h, (1 << 0));
 
     Serial.println("Core 0 ready");

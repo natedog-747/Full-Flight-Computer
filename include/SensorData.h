@@ -33,6 +33,20 @@ struct SensorData {
     uint8_t  gpsSats       = 0;
     float    gpsHDOP       = 0;
 
+    // Attitude — gyro-rate quaternion integration (NED frame, ZYX Euler)
+    // kfInitPhase: 0=ACCEL_AVG, 1=AWAIT_YAW, 2=READY
+    uint8_t kfInitPhase = 0;
+    float qw = 1, qx = 0, qy = 0, qz = 0;  // body-to-NED quaternion [w,x,y,z]
+    float roll = 0, pitch = 0, yaw = 0;     // deg — roll(x), pitch(y), yaw(z)
+
+    // KF dead-reckoning navigation (NED frame, metres and m/s)
+    float kfPosN = 0, kfPosE = 0, kfPosD = 0;
+    float kfVelN = 0, kfVelE = 0, kfVelD = 0;
+    float kfBaroBias = 0;  // barometer bias estimate (m)
+
+    // Flags — set by sensor drivers each cycle; cleared by caller after use
+    bool gpsNewData  = false;  // true for one cycle when GpsSensor has a fresh fix
+
     // Diagnostics
     float dtMs = 0;   // true sensor loop period (ms), measured start-to-start
 };

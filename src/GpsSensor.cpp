@@ -75,7 +75,8 @@ void GpsSensor::update(SensorData &out) {
     }
 
     // ── NED displacement ─────────────────────────────────────────────────────
-    out.gpsOrigin = true;
+    out.gpsOrigin  = true;
+    out.gpsNewData = true;
     _computeNED(out);
 }
 

@@ -26,7 +26,8 @@ bool SdLogger::begin() {
                       "relAltM,bmpPhase,bmpSettleRemSec,"
                       "gpsFix,gpsOrigin,gpsAvgRemSec,nedN,nedE,nedD,"
                       "velN_ms,velE_ms,velD_ms,gpsSpeedMs,gpsHeadingDeg,gpsSats,gpsHDOP,"
-                      "dtMs");
+                      "dtMs,qw,qx,qy,qz,roll,pitch,yaw,"
+                      "kfPosN,kfPosE,kfPosD,kfVelN,kfVelE,kfVelD,kfBaroBias");
         _file.close();
         _ready = true;
     } else {
@@ -50,7 +51,8 @@ void SdLogger::log(const SensorData &data) {
                 "%.3f,%s,%lu,"
                 "%u,%u,%lu,%.3f,%.3f,%.3f,"
                 "%.3f,%.3f,%.3f,%.3f,%.3f,%u,%.2f,"
-                "%.3f\n",
+                "%.3f,%.4f,%.4f,%.4f,%.4f,%.2f,%.2f,%.2f,"
+                "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
                 data.timestampMs,
                 data.ax,  data.ay,  data.az,
                 data.gx,  data.gy,  data.gz,
@@ -60,7 +62,12 @@ void SdLogger::log(const SensorData &data) {
                 data.nedN, data.nedE, data.nedD,
                 data.velN_ms, data.velE_ms, data.velD_ms,
                 data.gpsSpeedMs, data.gpsHeadingDeg, data.gpsSats, data.gpsHDOP,
-                data.dtMs);
+                data.dtMs,
+                data.qw, data.qx, data.qy, data.qz,
+                data.roll, data.pitch, data.yaw,
+                data.kfPosN, data.kfPosE, data.kfPosD,
+                data.kfVelN, data.kfVelE, data.kfVelD,
+                data.kfBaroBias);
             _file.close();
             _rowCount++;
         }
@@ -79,6 +86,25 @@ void SdLogger::log(const SensorData &data) {
             data.gx,  data.gy,  data.gz,
             data.relAltM, phases[(uint8_t)data.bmpPhase],
             data.dtMs, _rowCount);
+
+        // Attitude line
+        static const char *kfPhase[] = { "ACCEL_AVG", "AWAIT_YAW", "READY" };
+        const char *phase = (data.kfInitPhase <= 2) ? kfPhase[data.kfInitPhase] : "?";
+        Serial.printf(
+            "%s [KF:%s] roll=%+7.2f pitch=%+7.2f yaw=%+7.2f deg | "
+            "q=[%+.4f %+.4f %+.4f %+.4f]\n",
+            tag, phase,
+            data.roll, data.pitch, data.yaw,
+            data.qw, data.qx, data.qy, data.qz);
+
+        // KF navigation line
+        Serial.printf(
+            "%s [KF:NAV] N=%+8.3fm E=%+8.3fm D=%+7.3fm | "
+            "vN=%+6.2f vE=%+6.2f vD=%+6.2f m/s | baroBias=%+.3fm\n",
+            tag,
+            data.kfPosN, data.kfPosE, data.kfPosD,
+            data.kfVelN, data.kfVelE, data.kfVelD,
+            data.kfBaroBias);
 
         // GPS line
         if (!data.gpsFix) {
