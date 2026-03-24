@@ -4,6 +4,7 @@
 #include <FreeRTOS.h>
 #include <task.h>
 #include <semphr.h>
+#include <Servo.h>
 
 #include "SensorData.h"
 #include "GpsSensor.h"
@@ -22,8 +23,25 @@
 static GpsSensor  gGps(Serial1);
 static ImuSensor  gImu(Wire);
 static BaroSensor gBaro;
-// Core 1 owns: SPI1 (SD card)
+// Core 1 owns: SPI1 (SD card), servo passthrough
 static SdLogger   gLogger;
+
+// ── Servo passthrough (Core 1) ────────────────────────────────────────────────
+#define SERVO_IN_PIN   12
+#define SERVO_OUT_PIN  10
+
+static Servo            gServoOut;
+static volatile uint32_t gPulseStart   = 0;
+static volatile uint32_t gPulseWidthUs = 1500;  // safe default: centre
+
+static void onServoIn() {
+    if (digitalRead(SERVO_IN_PIN)) {
+        gPulseStart = micros();
+    } else {
+        uint32_t w = micros() - gPulseStart;
+        if (w >= 800 && w <= 2200) gPulseWidthUs = w;
+    }
+}
 // Kalman filter — owned exclusively by Core 0 sensor task (no mutex needed)
 static KalmanFilter gKF;
 
@@ -211,11 +229,27 @@ void setup1() {
     if (!gLogger.begin()) {
         Serial.println("SD FAIL — logging to serial only");
     }
+
+    // Servo passthrough: capture input on GPIO 13, drive output on GPIO 10
+    pinMode(SERVO_IN_PIN, INPUT);
+    attachInterrupt(digitalPinToInterrupt(SERVO_IN_PIN), onServoIn, CHANGE);
+    gServoOut.attach(SERVO_OUT_PIN, 800, 2200);
+
     Serial.println("Core 1 ready");
 }
 
 void loop1() {
     static TickType_t wake = xTaskGetTickCount();
+
+    // Mirror servo input → output with a 3-sample median filter.
+    // Rejects single-sample glitches with no lag on real signal changes.
+    static uint32_t med[3] = {1500, 1500, 1500};
+    med[0] = med[1]; med[1] = med[2]; med[2] = gPulseWidthUs;
+    uint32_t a = med[0], b = med[1], c = med[2];
+    if (a > b) { uint32_t t = a; a = b; b = t; }
+    if (b > c) { uint32_t t = b; b = c; c = t; }
+    if (a > b) { uint32_t t = a; a = b; b = t; }
+    gServoOut.writeMicroseconds((int)b);  // b is the median
 
     SensorData snap;
     if (xSemaphoreTake(gDataMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
