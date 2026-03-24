@@ -44,10 +44,6 @@ struct SensorData {
     float kfVelN = 0, kfVelE = 0, kfVelD = 0;
     float kfBaroBias = 0;  // barometer bias estimate (m)
 
-    // GPS bias estimates (from ESKF — slowly-varying GPS position/velocity offset)
-    float kfGpsBiasN = 0, kfGpsBiasE = 0, kfGpsBiasD = 0;  // pos bias NED (m)
-    float kfGpsBiasVelN = 0, kfGpsBiasVelE = 0;             // vel bias NE (m/s)
-
     // Flags — set by sensor drivers each cycle; cleared by caller after use
     bool gpsNewData  = false;  // true for one cycle when GpsSensor has a fresh fix
 
