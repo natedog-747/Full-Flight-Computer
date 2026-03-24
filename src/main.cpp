@@ -27,19 +27,34 @@ static BaroSensor gBaro;
 static SdLogger   gLogger;
 
 // ── Servo passthrough (Core 1) ────────────────────────────────────────────────
-#define SERVO_IN_PIN   12
-#define SERVO_OUT_PIN  10
+#define SERVO_A_IN_PIN   12
+#define SERVO_A_OUT_PIN  10
+#define SERVO_B_IN_PIN   11
+#define SERVO_B_OUT_PIN   9
 
-static Servo            gServoOut;
-static volatile uint32_t gPulseStart   = 0;
-static volatile uint32_t gPulseWidthUs = 1500;  // safe default: centre
+static Servo             gServoOutA;
+static volatile uint32_t gPulseStartA   = 0;
+static volatile uint32_t gPulseWidthUsA = 1500;
 
-static void onServoIn() {
-    if (digitalRead(SERVO_IN_PIN)) {
-        gPulseStart = micros();
+static Servo             gServoOutB;
+static volatile uint32_t gPulseStartB   = 0;
+static volatile uint32_t gPulseWidthUsB = 1500;
+
+static void onServoInA() {
+    if (digitalRead(SERVO_A_IN_PIN)) {
+        gPulseStartA = micros();
     } else {
-        uint32_t w = micros() - gPulseStart;
-        if (w >= 800 && w <= 2200) gPulseWidthUs = w;
+        uint32_t w = micros() - gPulseStartA;
+        if (w >= 800 && w <= 2200) gPulseWidthUsA = w;
+    }
+}
+
+static void onServoInB() {
+    if (digitalRead(SERVO_B_IN_PIN)) {
+        gPulseStartB = micros();
+    } else {
+        uint32_t w = micros() - gPulseStartB;
+        if (w >= 800 && w <= 2200) gPulseWidthUsB = w;
     }
 }
 // Kalman filter — owned exclusively by Core 0 sensor task (no mutex needed)
@@ -230,10 +245,14 @@ void setup1() {
         Serial.println("SD FAIL — logging to serial only");
     }
 
-    // Servo passthrough: capture input on GPIO 13, drive output on GPIO 10
-    pinMode(SERVO_IN_PIN, INPUT);
-    attachInterrupt(digitalPinToInterrupt(SERVO_IN_PIN), onServoIn, CHANGE);
-    gServoOut.attach(SERVO_OUT_PIN, 800, 2200);
+    // Servo passthrough: GPIO 12→10 and GPIO 11→9
+    pinMode(SERVO_A_IN_PIN, INPUT);
+    attachInterrupt(digitalPinToInterrupt(SERVO_A_IN_PIN), onServoInA, CHANGE);
+    gServoOutA.attach(SERVO_A_OUT_PIN, 800, 2200);
+
+    pinMode(SERVO_B_IN_PIN, INPUT);
+    attachInterrupt(digitalPinToInterrupt(SERVO_B_IN_PIN), onServoInB, CHANGE);
+    gServoOutB.attach(SERVO_B_OUT_PIN, 800, 2200);
 
     Serial.println("Core 1 ready");
 }
@@ -241,15 +260,25 @@ void setup1() {
 void loop1() {
     static TickType_t wake = xTaskGetTickCount();
 
-    // Mirror servo input → output with a 3-sample median filter.
-    // Rejects single-sample glitches with no lag on real signal changes.
-    static uint32_t med[3] = {1500, 1500, 1500};
-    med[0] = med[1]; med[1] = med[2]; med[2] = gPulseWidthUs;
-    uint32_t a = med[0], b = med[1], c = med[2];
-    if (a > b) { uint32_t t = a; a = b; b = t; }
-    if (b > c) { uint32_t t = b; b = c; c = t; }
-    if (a > b) { uint32_t t = a; a = b; b = t; }
-    gServoOut.writeMicroseconds((int)b);  // b is the median
+    // Mirror both servo inputs → outputs with a 3-sample median filter each.
+    {
+        static uint32_t med[3] = {1500, 1500, 1500};
+        med[0] = med[1]; med[1] = med[2]; med[2] = gPulseWidthUsA;
+        uint32_t a = med[0], b = med[1], c = med[2];
+        if (a > b) { uint32_t t = a; a = b; b = t; }
+        if (b > c) { uint32_t t = b; b = c; c = t; }
+        if (a > b) { uint32_t t = a; a = b; b = t; }
+        gServoOutA.writeMicroseconds((int)b);
+    }
+    {
+        static uint32_t med[3] = {1500, 1500, 1500};
+        med[0] = med[1]; med[1] = med[2]; med[2] = gPulseWidthUsB;
+        uint32_t a = med[0], b = med[1], c = med[2];
+        if (a > b) { uint32_t t = a; a = b; b = t; }
+        if (b > c) { uint32_t t = b; b = c; c = t; }
+        if (a > b) { uint32_t t = a; a = b; b = t; }
+        gServoOutB.writeMicroseconds((int)b);
+    }
 
     SensorData snap;
     if (xSemaphoreTake(gDataMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
