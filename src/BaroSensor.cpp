@@ -11,6 +11,14 @@ bool BaroSensor::begin() {
     return true;
 }
 
+void BaroSensor::resetCalibration() {
+    // Skip WARMUP (hardware already at temperature); jump straight to SETTLING.
+    // _ema carries the last locked pressure value — it converges fully within
+    // the 10-second SETTLING window regardless of its starting value.
+    _phaseStart = millis();
+    _phase      = BmpPhase::SETTLING;
+}
+
 void BaroSensor::update(SensorData &out) {
     uint32_t now = millis();
 

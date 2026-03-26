@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:arduino-pico.readthedocs.io)"
+      "WebFetch(domain:arduino-pico.readthedocs.io)",
+      "Bash(python3 -c \":*)",
+      "Bash(pwsh -Command \":*)"
     ]
   }
 }

@@ -27,7 +27,9 @@ bool SdLogger::begin() {
                       "gpsFix,gpsLat_rad,gpsLon_rad,gpsAlt_m,"
                       "velN_ms,velE_ms,velD_ms,gpsSpeedMs,gpsHeadingDeg,gpsSats,gpsHDOP,"
                       "dtMs,qw,qx,qy,qz,roll,pitch,yaw,"
-                      "kfLat_rad,kfLon_rad,kfAlt_m,kfVelN,kfVelE,kfVelD,kfBaroBias");
+                      "kfLat_rad,kfLon_rad,kfAlt_m,kfVelN,kfVelE,kfVelD,kfBaroBias,"
+                      "ctrlEngaged,engagePulse_us,rcA_us,rcB_us,servoA_us,servoB_us,"
+                      "errYaw_deg,integA_degs,errAlt_m,integB_ms,refAlt_m");
         _file.close();
         _ready = true;
     } else {
@@ -35,6 +37,18 @@ bool SdLogger::begin() {
     }
 
     return _ready;
+}
+
+void SdLogger::logEvent(const char *msg) {
+    uint32_t now = millis();
+    Serial.printf("[EVENT] %lu ms — %s\n", now, msg);
+    if (_ready) {
+        _file = _sd.open(_fname, FILE_WRITE);
+        if (_file) {
+            _file.printf("EVENT,%lu,%s\n", now, msg);
+            _file.close();
+        }
+    }
 }
 
 void SdLogger::log(const SensorData &data) {

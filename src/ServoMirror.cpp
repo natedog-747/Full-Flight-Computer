@@ -11,11 +11,11 @@ void ServoMirror::begin(uint8_t inPinA, uint8_t outPinA,
     _inPin[0] = inPinA;
     _inPin[1] = inPinB;
 
-    pinMode(inPinA, INPUT);
+    pinMode(inPinA, INPUT_PULLDOWN);
     attachInterrupt(digitalPinToInterrupt(inPinA), isrA, CHANGE);
     _out[0].attach(outPinA, 800, 2200);
 
-    pinMode(inPinB, INPUT);
+    pinMode(inPinB, INPUT_PULLDOWN);
     attachInterrupt(digitalPinToInterrupt(inPinB), isrB, CHANGE);
     _out[1].attach(outPinB, 800, 2200);
 }

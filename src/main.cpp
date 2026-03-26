@@ -51,10 +51,19 @@ static constexpr ServoMirror::Channel ROLL_SERVO  = ServoMirror::SERVO_B;  // ai
 // ALL I2C stays on Core 0 — cross-core Wire calls crash the RP2040.
 #define ENGAGE_IN_PIN  5
 
-// Servo pulse width threshold in microseconds.
-// Engage when the input channel is above ~1700 µs (stick past 2/3 high).
-// Standard RC range is 1000–2000 µs; 1700 µs is a reliable high-side threshold.
-static constexpr uint32_t ENGAGE_THRESHOLD_US = 1700;
+// Servo pulse-width thresholds (µs).  Standard RC range is 1000–2000 µs.
+//
+//  Zone               Pulse width       Switch position (3-pos switch)
+//  ─────────────────  ────────────────  ────────────────────────────────
+//  Passthrough        < 1250 µs         low  (~1000 µs)
+//  Autopilot engaged  1250 – 1599 µs    middle (~1500 µs)
+//  KF reset           ≥ 1600 µs         high (~2000 µs)
+//
+// RESET_THRESHOLD is set to 1600 µs rather than exactly 1500 µs so that a
+// switch resting at the centre position (1500 µs) never accidentally fires
+// a reset due to normal ±50 µs signal variation.
+static constexpr uint32_t ENGAGE_THRESHOLD_US = 1250;   // 1/4 of 1000–2000 µs range
+static constexpr uint32_t RESET_THRESHOLD_US  = 1900;   // above centre — high switch pos
 static constexpr uint8_t  PCA9685_FREQ_HZ     = 50;    // standard servo PWM freq
 
 // Centre pulse = 1500 µs. At 50 Hz the PCA9685 period is 20 000 µs / 4096 counts.
@@ -70,6 +79,15 @@ static Adafruit_PWMServoDriver gPwmDriver(0x40, Wire);
 // Volatile is sufficient — single-bit, 32-bit-aligned on Cortex-M0+.
 static volatile bool gEngageActive = false;
 
+// Cross-core KF reset request: Core 1 sets on rising edge into reset zone,
+// Core 0 consumes (calls gKF.reset() + gBaro.resetCalibration()) and clears.
+static volatile bool gKfResetPending = false;
+
+// Cross-core ready-wag: Core 0 sets once when KF first reaches READY.
+// gWagSatCount holds the satellite count to wag; Core 1 reads and clears both.
+static volatile bool    gWagPending  = false;
+static volatile uint8_t gWagSatCount = 0;
+
 // Duty-cycle measurement for the engage pin (Core 1 ISR).
 // gEngageValid is false until we have seen at least one complete high pulse,
 // preventing a false trigger if the first edge is a falling edge.
@@ -77,6 +95,8 @@ static volatile bool     gEngageValid    = false;
 static volatile uint32_t gEngageRiseUs   = 0;
 static volatile uint32_t gEngageHighUs   = 0;
 static volatile uint32_t gEngagePeriodUs = 20000;  // safe default (50 Hz)
+// Timestamp of the last valid falling edge — used to detect signal loss.
+static volatile uint32_t gEngageLastFallUs = 0;
 
 static void onEngagePin() {
     uint32_t now = micros();
@@ -91,8 +111,9 @@ static void onEngagePin() {
     } else {
         // Falling edge — capture high time (only after a rising edge has been seen)
         if (gEngageRiseUs != 0) {
-            gEngageHighUs = now - gEngageRiseUs;
-            gEngageValid  = true;
+            gEngageHighUs     = now - gEngageRiseUs;
+            gEngageLastFallUs = now;
+            gEngageValid      = true;
         }
     }
 }
@@ -147,6 +168,17 @@ static void taskSensors(void *) {
         imuLocal.dtMs        = (nowUs - prevUs) / 1000.0f;
         prevUs               = nowUs;
 
+        // ── KF reset (requested by Core 1 via switch high position) ─────────
+        // Consume the flag here so reset() and resetCalibration() execute on
+        // Core 0, which owns Wire (I2C).  Both calls are safe at this point
+        // because the KF feeds/predict below will start fresh on this cycle.
+        if (gKfResetPending) {
+            gKfResetPending = false;
+            gKF.reset();
+            gBaro.resetCalibration();
+            Serial.println("KF RESET: attitude + gyro bias re-initialising, baro re-baselining");
+        }
+
         // ── NED axis flip + KF update ────────────────────────────────────────
         // Sensor frame: x=nose, y=left wing, z=up
         // NED frame:    x=nose, y=right wing, z=down  →  negate y and z
@@ -177,6 +209,21 @@ static void taskSensors(void *) {
             gKF.getVelocity(imuLocal.kfVelN, imuLocal.kfVelE, imuLocal.kfVelD);
             imuLocal.kfInitPhase = (uint8_t)gKF.getInitPhase();
             imuLocal.kfBaroBias  = gKF.getBaroBias();
+
+            // One-shot: wag the rudder when KF first reaches READY.
+            // Satellite count is captured here (Core 0 owns GPS state).
+            // Core 1 will consume gWagPending and execute the wag sequence.
+            {
+                static bool wagArmed = true;   // false after first READY transition
+                if (wagArmed && gKF.isReady()) {
+                    wagArmed     = false;
+                    uint8_t sats = gpsLocal.gpsSats;
+                    if (sats > 12) sats = 12;  // cap at 12 to keep wag under ~5 s
+                    gWagSatCount = sats;
+                    gWagPending  = true;
+                    Serial.printf("WAG: KF ready — %u sats, wagging %u times\n", sats, sats);
+                }
+            }
         }
 
         if (nowMs - lastCalMs >= 1000) {
@@ -310,52 +357,175 @@ void setup1() {
     gServoMirror.setController(gController);
 
     // Engage duty-cycle monitor on GPIO 5
+    // INPUT_PULLDOWN keeps the pin LOW when no RC signal is connected, preventing
+    // spurious ISR triggers from a floating pin that could falsely set gEngageActive.
     // ISR only sets gEngageActive; PCA9685 writes happen on Core 0 via Wire.
-    pinMode(ENGAGE_IN_PIN, INPUT);
+    pinMode(ENGAGE_IN_PIN, INPUT_PULLDOWN);
     attachInterrupt(digitalPinToInterrupt(ENGAGE_IN_PIN), onEngagePin, CHANGE);
 
     Serial.println("Core 1 ready");
 }
 
 void loop1() {
-    static TickType_t wake        = xTaskGetTickCount();
-    static bool       prevEngaged = false;
+    static TickType_t wake         = xTaskGetTickCount();
+    static bool       prevEngaged  = false;
+    static bool       ctrlReady    = false;
+    static uint8_t    engageCount  = 0;   // debounce counter
 
-    // ── 1. Update engage state from duty-cycle ISR ────────────────────────────
-    // No I2C here — Core 0 owns Wire and handles all PCA9685 transactions.
-    if (gEngageValid) {
-        gEngageActive = (gEngageHighUs >= ENGAGE_THRESHOLD_US);
+    // ── 1. Update engage / reset state ───────────────────────────────────────
+    // Raw signal check: pulse is valid if a falling edge was seen within the
+    // last 50 ms (2.5 RC frames at 50 Hz) AND the pulse width clears the
+    // threshold.  gEngageHighUs starts at 0, so this defaults safely to false.
+    bool fresh   = (micros() - gEngageLastFallUs) < 50000;
+    bool rawHigh = fresh && (gEngageHighUs >= ENGAGE_THRESHOLD_US);
+    bool inReset = fresh && (gEngageHighUs >= RESET_THRESHOLD_US);
+
+    // Debounce: require 3 consecutive high reads (~30 ms) to go engaged,
+    // but drop to disengaged immediately on the first non-high read.
+    if (rawHigh) {
+        if (engageCount < 3) engageCount++;
+    } else {
+        engageCount = 0;
     }
+    gEngageActive = (engageCount >= 3);
     bool engaged = gEngageActive;
 
+    // Rising edge into reset zone → schedule KF/baro reset on Core 0 (one-shot).
+    // Also immediately disengage so the plane is in safe passthrough while the
+    // KF re-initialises (~10 s accel avg + up to 30 s yaw init).
+    {
+        static bool prevInReset = false;
+        if (inReset && !prevInReset) {
+            gKfResetPending = true;
+            Serial.println("KF RESET: scheduled — disengaging");
+        }
+        prevInReset = inReset;
+    }
+
     // ── 2. Grab latest sensor snapshot ───────────────────────────────────────
-    SensorData snap;
+    SensorData snap = {};   // zero-init so control never sees garbage if mutex times out
     if (xSemaphoreTake(gDataMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
         snap = gShared;
         xSemaphoreGive(gDataMutex);
     }
 
-    // ── 3. Engage edge: latch NED origin and initial setpoints ───────────────
-    if (engaged && !prevEngaged) {
-        // Only engage once the KF is running and has a GPS fix
-        if (snap.kfInitPhase == 2 && snap.gpsFix) {
-            gController.engage(snap);
-            Serial.println("CTRL: engaged");
+    // ── 3. Engage / disengage logic ───────────────────────────────────────────
+    if (!engaged) {
+        // Switch low — disengage immediately.
+        if (ctrlReady) {
+            ctrlReady = false;
+            gController.disengage();
+            gServoMirror.passthrough();
+            Serial.println("CTRL: disengaged — passthrough active");
         }
+    } else if (inReset) {
+        // Switch high (reset zone) — force disengaged while held here.
+        // The KF reset was already scheduled on the rising edge in step 1.
+        if (ctrlReady) {
+            ctrlReady = false;
+            gController.disengage();
+            gServoMirror.passthrough();
+        }
+    } else if (!ctrlReady) {
+        // Switch in engage zone — engage immediately (bumpless transfer).
+        gController.engage(snap);
+        ctrlReady = true;
+
+        static constexpr float kR2D = 180.0f / 3.14159265f;
+        char buf[160];
+        snprintf(buf, sizeof(buf),
+            "ENGAGE: kfPhase=%u gpsFix=%u roll=%.1fdeg pitch=%.1fdeg hdg=%.1fdeg",
+            snap.kfInitPhase, (uint8_t)snap.gpsFix,
+            snap.roll, snap.pitch, snap.yaw);
+        Serial.println(buf);
+        gLogger.logEvent(buf);
     }
     prevEngaged = engaged;
 
     // ── 4. Servo output ───────────────────────────────────────────────────────
-    if (!engaged) {
-        // Passthrough: mirror RC inputs through a 3-sample median filter.
-        gServoMirror.passthrough();
-    } else {
-        // Engaged: run per-axis control functions defined in ServoMirror.cpp.
-        gServoMirror.controlAxisA(snap);
-        gServoMirror.controlAxisB(snap);
+    // Servo output — passthrough is the ONLY mode when not fully engaged.
+    // Diagnostic line prints every 500 ms: mode, raw pin-5 pulse, servo values.
+
+    // Wag state machine — executes only in passthrough mode.
+    // Each "wag" is one full ±10° sweep (two 200 ms half-wags).
+    // Number of wags = GPS satellite count captured when KF first reached READY.
+    static constexpr uint32_t WAG_HALF_MS      = 200;  // ms per half-deflection
+    static constexpr uint32_t WAG_AMPLITUDE_US = 56;   // 10° in µs (500µs/90° × 10°)
+    static uint8_t  wagHalfRem = 0;   // half-wags remaining (2 per full wag)
+    static bool     wagHigh    = true;
+    static uint32_t wagNextMs  = 0;
+
+    // Consume the pending flag from Core 0 (only start if not engaged)
+    if (gWagPending && !engaged) {
+        gWagPending = false;
+        wagHalfRem  = (uint8_t)(gWagSatCount * 2);
+        wagHigh     = true;
+        wagNextMs   = millis();
     }
 
-    // ── 5. Log ────────────────────────────────────────────────────────────────
+    // Hoist servo command outputs so step 4 and step 5 share the same values
+    // without calling updateAxisA/B twice (which would double the integrators).
+    uint16_t cmdA = 1500, cmdB = 1500;
+
+    {
+        static uint32_t lastDiagMs = 0;
+        uint32_t nowMs = millis();
+        bool printNow  = (nowMs - lastDiagMs >= 500);
+
+        if (!engaged || !ctrlReady) {
+            if (wagHalfRem > 0) {
+                // Wag SERVO_A (rudder); let SERVO_B passthrough normally
+                if (nowMs >= wagNextMs) {
+                    uint32_t wagUs = wagHigh
+                        ? (ServoMirror::PULSE_CENTER_US + WAG_AMPLITUDE_US)
+                        : (ServoMirror::PULSE_CENTER_US - WAG_AMPLITUDE_US);
+                    gServoMirror.write(ServoMirror::SERVO_A, wagUs);
+                    wagHigh = !wagHigh;
+                    wagHalfRem--;
+                    wagNextMs = nowMs + WAG_HALF_MS;
+                }
+                gServoMirror.write(ServoMirror::SERVO_B,
+                                   gServoMirror.getRawInput(ServoMirror::SERVO_B));
+            } else {
+                gServoMirror.passthrough();
+            }
+            if (printNow) {
+                lastDiagMs = nowMs;
+                const char *tag = (wagHalfRem > 0) ? "[WAG     ]"
+                                : inReset           ? "[KF-RESET]"
+                                :                     "[PASSTHRU]";
+                Serial.printf("%s pin5=%luus cnt=%u rcA=%luus rcB=%luus\n",
+                    tag, gEngageHighUs, engageCount,
+                    gServoMirror.getRawInput(ServoMirror::SERVO_A),
+                    gServoMirror.getRawInput(ServoMirror::SERVO_B));
+            }
+        } else {
+            cmdA = gController.updateAxisA(snap);
+            cmdB = gController.updateAxisB(snap);
+            gServoMirror.write(ServoMirror::SERVO_A, cmdA);
+            gServoMirror.write(ServoMirror::SERVO_B, cmdB);
+            if (printNow) {
+                lastDiagMs = nowMs;
+                Serial.printf("[CONTROL ] pin5=%luus cnt=%u ctrlA=%uus ctrlB=%uus\n",
+                    gEngageHighUs, engageCount, cmdA, cmdB);
+            }
+        }
+    }
+
+    // ── 5. Populate control-state fields in snap, then log ───────────────────
+    // These are written into the LOCAL snap copy only — not back to gShared.
+    snap.ctrlEngaged   = (engaged && ctrlReady);
+    snap.engagePulseUs = gEngageHighUs;
+    snap.rcA_us        = gServoMirror.getRawInput(ServoMirror::SERVO_A);
+    snap.rcB_us        = gServoMirror.getRawInput(ServoMirror::SERVO_B);
+    snap.ctrlServoA_us = cmdA;
+    snap.ctrlServoB_us = cmdB;
+    snap.ctrlErrYaw    = gController.getErrYaw();
+    snap.ctrlIntegA    = gController.getIntegA();
+    snap.ctrlErrAlt    = gController.getErrAlt();
+    snap.ctrlIntegB    = gController.getIntegB();
+    snap.ctrlRefAlt    = gController.getHomeAlt();
+
     gLogger.log(snap);
 
     vTaskDelayUntil(&wake, pdMS_TO_TICKS(LOG_RATE_MS));

@@ -20,6 +20,10 @@ void Controller::engage(const SensorData &snap) {
 
     // ── Home heading ──────────────────────────────────────────────────────
     _homeHeading = snap.yaw;   // deg, 0 = North, CW positive
+
+    _integA    = 0.0f;   // clear integrators on every engage for bumpless transfer
+    _integB    = 0.0f;
+    _isEngaged = true;
 }
 
 // ── updateState (shared between both axes) ────────────────────────────────────
@@ -42,40 +46,102 @@ void Controller::updateState(const SensorData &snap) {
     _qz    = snap.qz;
 }
 
-// ── updateAxisA — pitch / elevator ────────────────────────────────────────────
-//   u = center + Kp*(targetPitch - pitch) - Kd*pitchRate
+// ── updateAxisA — yaw / heading hold ─────────────────────────────────────────
+//   u = center - ( Kp*err + Ki*∫err·dt - Kd*yawRate )
 //
-// IMU rate mapping:  pitch rate NED = -snap.gy  (sensor y = left-wing, NED y = right-wing)
-// Sign convention:   servo > 1500 µs → nose UP.  Flip KP_A / KD_A signs if reversed.
+// The correction is negated so that a positive heading error (plane rotated CW
+// from home) commands servo < 1500 µs.  Flip all signs if your airframe is
+// reversed relative to this convention.
+//
+// Angle wrap:  error is normalised to [-180, 180] so the controller always
+// takes the short way around (no jump at the ±180° boundary).
+//
+// Anti-windup: the integrator contribution is clamped to ±INTEG_LIMIT_A µs
+// before being added to the output.  The integrator itself accumulates without
+// limit internally; only its effect on the servo is bounded.
+//
+// dt: taken from snap.dtMs (IMU cycle time, ~10 ms), clamped to [1, 50] ms to
+// prevent runaway accumulation if the snapshot is stale.
 uint16_t Controller::updateAxisA(const SensorData &snap) {
+    if (!_isEngaged) return SERVO_CENTER_US;
     updateState(snap);
 
-    float yawRate = snap.gz;   // NED yaw rate (CW positive
-    float errYaw  = snap.yaw - _homeHeading;
+    // ── Heading error, wrapped to [-180, 180] ─────────────────────────────
+    float errYaw = snap.yaw - _homeHeading;
+    while (errYaw >  180.0f) errYaw -= 360.0f;
+    while (errYaw < -180.0f) errYaw += 360.0f;
+    _errYaw = errYaw;   // store for logging
 
-    float uA = SERVO_CENTER_US + KP_A * errYaw - KD_A * yawRate;
-    return clampUs(uA);
+    // ── Integrator accumulation ───────────────────────────────────────────
+    float dt = snap.dtMs * 0.001f;
+    if (dt < 0.001f) dt = 0.001f;
+    if (dt > 0.050f) dt = 0.050f;
+    _integA += errYaw * dt;
+
+    // Anti-windup: clamp integrator contribution (not the state itself, so
+    // it keeps tracking but can't saturate the output on its own).
+    float integContrib = KI_A * _integA;
+    if (integContrib >  INTEG_LIMIT_A) integContrib =  INTEG_LIMIT_A;
+    if (integContrib < -INTEG_LIMIT_A) integContrib = -INTEG_LIMIT_A;
+
+    // ── PID output (negated — servo is physically reversed) ──────────────
+    float yawRate = snap.gz;   // NED yaw rate, deg/s, CW positive
+    float uA = SERVO_CENTER_US - (KP_A * errYaw + integContrib - KD_A * yawRate);
+    return clampCtrl(uA);
 }
 
-// ── updateAxisB — roll / aileron ──────────────────────────────────────────────
-//   u = center + Kp*(targetRoll - roll) - Kd*rollRate
+// ── updateAxisB — altitude hold (PI) ─────────────────────────────────────────
+//   u = center + Kp*errAlt + Ki*∫errAlt·dt
 //
-// IMU rate mapping:  roll rate NED = snap.gx  (sensor x = nose = NED x, no flip)
-// Sign convention:   servo > 1500 µs → right-wing DOWN.  Flip KP_B / KD_B if reversed.
+// Reference altitude (_refAlt) is the KF altitude (m) captured at engage time.
+// Error convention:  errAlt > 0 → plane is BELOW target → needs to climb.
+// Servo convention:  servo > 1500 µs should produce nose-UP / climb.
+//                    If your airframe is reversed, negate KP_B and KI_B.
+//
+// No derivative term — altitude is a slow-enough state that a D term on raw
+// KF altitude adds noise more than it helps.  Add if desired.
+//
+// Anti-windup: same clamped-contribution approach as axis A.
 uint16_t Controller::updateAxisB(const SensorData &snap) {
+    if (!_isEngaged) return SERVO_CENTER_US;
     updateState(snap);
 
-    float rollRate = snap.gx;   // NED roll rate (right-wing-down positive)
-    float errRoll  = _targetRoll - _roll;
+    // ── Altitude error (m): positive = below engage altitude ─────────────
+    float errAlt = _refAlt - snap.kfAlt;
+    _errAlt = errAlt;   // store for logging
 
-    float uB = SERVO_CENTER_US + KP_B * errRoll - KD_B * rollRate;
-    return clampUs(uB);
+    // ── Integrator accumulation ───────────────────────────────────────────
+    float dt = snap.dtMs * 0.001f;
+    if (dt < 0.001f) dt = 0.001f;
+    if (dt > 0.050f) dt = 0.050f;
+    _integB += errAlt * dt;
+
+    // Anti-windup: clamp contribution, not the state
+    float integContrib = KI_B * _integB;
+    if (integContrib >  INTEG_LIMIT_B) integContrib =  INTEG_LIMIT_B;
+    if (integContrib < -INTEG_LIMIT_B) integContrib = -INTEG_LIMIT_B;
+
+    // ── PI output (negated — servo is physically reversed) ────────────────
+    float uB = SERVO_CENTER_US - (KP_B * errAlt + integContrib);
+    return clampCtrl(uB);
 }
 
 // ── clampUs ───────────────────────────────────────────────────────────────────
 uint16_t Controller::clampUs(float us) {
     if (us < (float)SERVO_MIN_US) return SERVO_MIN_US;
     if (us > (float)SERVO_MAX_US) return SERVO_MAX_US;
+    return (uint16_t)us;
+}
+
+// ── clampCtrl ─────────────────────────────────────────────────────────────────
+// Limits controller output to ±CTRL_LIMIT_US (±20°) around centre.
+// Prevents the autopilot from commanding more than 20° of deflection regardless
+// of how large the error or integrator grow.
+uint16_t Controller::clampCtrl(float us) {
+    const float lo = (float)(SERVO_CENTER_US - CTRL_LIMIT_US);
+    const float hi = (float)(SERVO_CENTER_US + CTRL_LIMIT_US);
+    if (us < lo) return (uint16_t)lo;
+    if (us > hi) return (uint16_t)hi;
     return (uint16_t)us;
 }
 

@@ -37,8 +37,8 @@ public:
     static constexpr float GPS_HDG_SPEED_MS  =  1.0f;  // min GPS speed to update heading (m/s)
 
     // Process noise — standard deviations (SI units)
-    static constexpr float SIGMA_ACCEL      =  0.10f;  // m/s²      IMU accel white noise
-    static constexpr float SIGMA_GYRO       =  0.10f;  // rad/s     IMU gyro white noise
+    static constexpr float SIGMA_ACCEL      =  0.20f;  // m/s²      IMU accel white noise
+    static constexpr float SIGMA_GYRO       =  0.20f;  // rad/s     IMU gyro white noise
     static constexpr float SIGMA_ACCEL_WALK =  0.10f;  // m/s²/√s  accel bias random walk
     static constexpr float SIGMA_GYRO_WALK  =  0.10f;  // rad/s/√s gyro bias random walk
     static constexpr float SIGMA_BARO_WALK  =  0.10f;  // m/√s     baro bias random walk

@@ -48,4 +48,18 @@ struct SensorData {
 
     // Diagnostics
     float dtMs = 0;   // true sensor loop period (ms), measured start-to-start
+
+    // ── Flight control state (written by loop1 into local snap before logging) ─
+    // These are NOT in gShared — only the local copy in loop1() carries them.
+    bool     ctrlEngaged   = false;  // true when autopilot is fully engaged & controlling
+    uint16_t ctrlServoA_us = 1500;   // axis A output µs (controller cmd, or 1500 if passthrough)
+    uint16_t ctrlServoB_us = 1500;   // axis B output µs
+    uint32_t rcA_us        = 1500;   // RC receiver input channel A (µs)
+    uint32_t rcB_us        = 1500;   // RC receiver input channel B (µs)
+    uint32_t engagePulseUs = 0;      // engage/reset switch pulse width (µs)
+    float    ctrlErrYaw    = 0.0f;   // yaw error fed into axis A PID (deg)
+    float    ctrlIntegA    = 0.0f;   // axis A integrator state (deg·s)
+    float    ctrlErrAlt    = 0.0f;   // altitude error fed into axis B PI (m)
+    float    ctrlIntegB    = 0.0f;   // axis B integrator state (m·s)
+    float    ctrlRefAlt    = 0.0f;   // altitude reference latched at engage (m)
 };

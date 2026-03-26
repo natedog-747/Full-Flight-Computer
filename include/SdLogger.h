@@ -11,6 +11,9 @@ public:
     bool begin();
     void log(const SensorData &data);
 
+    // Write a one-shot event line (EVENT,<ms>,<msg>) to SD and Serial.
+    void logEvent(const char *msg);
+
 private:
     SdFat    _sd;
     File32   _file;

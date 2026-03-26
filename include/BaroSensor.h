@@ -8,6 +8,11 @@ public:
 
     bool begin();
 
+    // Restart ground-pressure calibration without reinitialising the hardware.
+    // Skips the WARMUP phase (sensor is already warm) and re-runs the 10-second
+    // SETTLING EMA from the current pressure reading.
+    void resetCalibration();
+
     // Call every loop iteration; internally rate-limits to 50 Hz.
     // Writes relAltM, bmpPhase, bmpSettleRemSec into out.
     void update(SensorData &out);

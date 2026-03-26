@@ -35,6 +35,9 @@ public:
     // Send a specific pulse width (µs) to one output servo.
     void write(Channel ch, uint32_t us);
 
+    // Return the latest raw (unfiltered) RC pulse width for a channel (µs).
+    uint32_t getRawInput(Channel ch) const { return _pulseWidthUs[ch]; }
+
     // ── Per-axis control functions ─────────────────────────────────────────────
     // Called every loop while engaged.  Put your control logic for each axis
     // here and call write(SERVO_A/B, us) to drive the output.
