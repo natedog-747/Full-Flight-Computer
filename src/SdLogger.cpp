@@ -66,7 +66,9 @@ void SdLogger::log(const SensorData &data) {
                 "%u,%.8f,%.8f,%.3f,"
                 "%.3f,%.3f,%.3f,%.3f,%.3f,%u,%.2f,"
                 "%.3f,%.4f,%.4f,%.4f,%.4f,%.2f,%.2f,%.2f,"
-                "%.8f,%.8f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+                "%.8f,%.8f,%.3f,%.3f,%.3f,%.3f,%.3f,"
+                "%u,%lu,%lu,%lu,%u,%u,"
+                "%.3f,%.4f,%.3f,%.4f,%.3f\n",
                 data.timestampMs,
                 data.ax,  data.ay,  data.az,
                 data.gx,  data.gy,  data.gz,
@@ -81,7 +83,13 @@ void SdLogger::log(const SensorData &data) {
                 data.roll, data.pitch, data.yaw,
                 data.kfLat, data.kfLon, data.kfAlt,
                 data.kfVelN, data.kfVelE, data.kfVelD,
-                data.kfBaroBias);
+                data.kfBaroBias,
+                (uint8_t)data.ctrlEngaged, data.engagePulseUs,
+                data.rcA_us, data.rcB_us,
+                data.ctrlServoA_us, data.ctrlServoB_us,
+                data.ctrlErrYaw, data.ctrlIntegA,
+                data.ctrlErrAlt, data.ctrlIntegB,
+                data.ctrlRefAlt);
             _file.close();
             _rowCount++;
         }

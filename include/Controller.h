@@ -44,9 +44,9 @@ public:
     // Derived from the standard RC servo mapping: 500 µs = 90°, so 1° ≈ 5.56 µs.
     // Controller output is clamped to [CENTER - CTRL_LIMIT_US, CENTER + CTRL_LIMIT_US]
     // regardless of how large the error or integrator grow.
-    static constexpr float    CTRL_LIMIT_DEG = 30.0f;
+    static constexpr float    CTRL_LIMIT_DEG = 40.0f;
     static constexpr uint16_t CTRL_LIMIT_US  =
-        static_cast<uint16_t>(CTRL_LIMIT_DEG * 500.0f / 90.0f);  // = 166 µs
+        static_cast<uint16_t>(CTRL_LIMIT_DEG * 500.0f / 90.0f);  // = 222 µs
 
     Controller() = default;
 
