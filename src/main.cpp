@@ -224,6 +224,11 @@ static void taskSensors(void *) {
                     Serial.printf("WAG: KF ready — %u sats, wagging %u times\n", sats, sats);
                 }
             }
+
+            // ── One-shot: seed KF altitude from GPS on first READY + GPS fix + baro locked
+            if (gKF.isReady() && gpsLocal.gpsFix && baroLocal.bmpPhase == BmpPhase::LOCKED) {
+                gKF.seedAltitude(gpsLocal.gpsAlt, baroLocal.relAltM);
+            }
         }
 
         if (nowMs - lastCalMs >= 1000) {

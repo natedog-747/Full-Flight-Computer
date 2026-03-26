@@ -73,6 +73,14 @@ public:
                  float ax, float ay, float az,
                  float dt);
 
+    // Seeds KF altitude and baro bias from GPS and locked baro readings.
+    // Call once immediately after isReady() first becomes true, before the first
+    // predict()/updateFrom*() cycle on that READY state.  Without this, the filter
+    // converges from mPos[2]=0 / mBaroBias=0, producing a large initial baro
+    // innovation equal to the MSL altitude (~hundreds of metres) that walks the
+    // altitude estimate for many seconds.  One-shot — re-arms automatically on reset().
+    void seedAltitude(float gpsAlt, float baroRelAlt);
+
     // ── Measurement updates (call ONLY when new sensor data arrives) ─────────
 
     // GPS geodetic position (lat rad, lon rad, alt m), NED velocity (m/s, velD ignored),
@@ -116,6 +124,7 @@ private:
     float     mInitRoll        = 0.0f;
     float     mInitPitch       = 0.0f;
     uint32_t  mAwaitYawTicks   = 0;   // predict() calls since AWAIT_YAW; unconditional timeout
+    bool      mAltSeeded       = false;  // true after seedAltitude() has fired once
 
     // ── Private helpers ───────────────────────────────────────────────────────
     void normalizeQuat();

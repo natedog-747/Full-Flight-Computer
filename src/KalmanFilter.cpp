@@ -32,6 +32,22 @@ void KalmanFilter::reset() {
     mAwaitYawCount = 0;
     mInitRoll      = 0.0f;
     mInitPitch     = 0.0f;
+    mAltSeeded     = false;
+}
+
+// ── seedAltitude ──────────────────────────────────────────────────────────────
+// One-shot: sets mPos[2] = gpsAlt and mBaroBias = baroRelAlt - gpsAlt so the
+// first baro update sees near-zero innovation instead of ~MSL altitude (~hundreds
+// of metres).  Also tightens the altitude and baro-bias covariance diagonals to
+// 100 m² (10 m std), which is consistent with GPS vertical accuracy.
+// Re-arms automatically on reset() — call once per READY phase.
+void KalmanFilter::seedAltitude(float gpsAlt, float baroRelAlt) {
+    if (mAltSeeded) return;
+    mAltSeeded   = true;
+    mPos[2]      = gpsAlt;
+    mBaroBias    = baroRelAlt - gpsAlt;   // baro model: nomAlt = pos[2] + baroBias
+    mCov[2][2]   = 100.0f;               // 10 m std for altitude
+    mCov[15][15] = 100.0f;               // 10 m std for baro bias
 }
 
 // ── normalizeQuat ─────────────────────────────────────────────────────────────
