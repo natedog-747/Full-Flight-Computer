@@ -14,6 +14,7 @@
 #include "SdLogger.h"
 #include "KalmanFilter.h"
 #include "Controller.h"
+#include "ServoMirror.h"
 
 // ── Configurable update / log rates (milliseconds) ───────────────────────────
 #define IMU_RATE_MS     10   // 100 Hz — also sets how often the GPS UART is drained
@@ -34,31 +35,14 @@ static SdLogger   gLogger;
 #define SERVO_B_IN_PIN   11
 #define SERVO_B_OUT_PIN   9
 
-static Servo             gServoOutA;
-static volatile uint32_t gPulseStartA   = 0;
-static volatile uint32_t gPulseWidthUsA = 1500;
+static ServoMirror  gServoMirror;
+static Controller   gController;
 
-static Servo             gServoOutB;
-static volatile uint32_t gPulseStartB   = 0;
-static volatile uint32_t gPulseWidthUsB = 1500;
-
-static void onServoInA() {
-    if (digitalRead(SERVO_A_IN_PIN)) {
-        gPulseStartA = micros();
-    } else {
-        uint32_t w = micros() - gPulseStartA;
-        if (w >= 800 && w <= 2200) gPulseWidthUsA = w;
-    }
-}
-
-static void onServoInB() {
-    if (digitalRead(SERVO_B_IN_PIN)) {
-        gPulseStartB = micros();
-    } else {
-        uint32_t w = micros() - gPulseStartB;
-        if (w >= 800 && w <= 2200) gPulseWidthUsB = w;
-    }
-}
+// ── Autopilot servo assignment ────────────────────────────────────────────────
+// Map each control-loop axis to a physical servo channel.
+// Swap these if your airframe's wiring is reversed.
+static constexpr ServoMirror::Channel PITCH_SERVO = ServoMirror::SERVO_A;  // elevator
+static constexpr ServoMirror::Channel ROLL_SERVO  = ServoMirror::SERVO_B;  // aileron
 
 // ── PCA9685 engage logic ──────────────────────────────────────────────────────
 // GPIO 5 PWM duty cycle is measured on Core 1 (interrupt-based).
@@ -320,14 +304,10 @@ void setup1() {
         Serial.println("SD FAIL — logging to serial only");
     }
 
-    // Servo passthrough: GPIO 12→10 and GPIO 11→9
-    pinMode(SERVO_A_IN_PIN, INPUT);
-    attachInterrupt(digitalPinToInterrupt(SERVO_A_IN_PIN), onServoInA, CHANGE);
-    gServoOutA.attach(SERVO_A_OUT_PIN, 800, 2200);
-
-    pinMode(SERVO_B_IN_PIN, INPUT);
-    attachInterrupt(digitalPinToInterrupt(SERVO_B_IN_PIN), onServoInB, CHANGE);
-    gServoOutB.attach(SERVO_B_OUT_PIN, 800, 2200);
+    // Servo passthrough: GPIO 12→10 (A) and GPIO 11→9 (B)
+    gServoMirror.begin(SERVO_A_IN_PIN, SERVO_A_OUT_PIN,
+                       SERVO_B_IN_PIN, SERVO_B_OUT_PIN);
+    gServoMirror.setController(gController);
 
     // Engage duty-cycle monitor on GPIO 5
     // ISR only sets gEngageActive; PCA9685 writes happen on Core 0 via Wire.
@@ -339,7 +319,6 @@ void setup1() {
 
 void loop1() {
     static TickType_t wake        = xTaskGetTickCount();
-    static Controller gController;
     static bool       prevEngaged = false;
 
     // ── 1. Update engage state from duty-cycle ISR ────────────────────────────
@@ -369,31 +348,11 @@ void loop1() {
     // ── 4. Servo output ───────────────────────────────────────────────────────
     if (!engaged) {
         // Passthrough: mirror RC inputs through a 3-sample median filter.
-        {
-            static uint32_t med[3] = {1500, 1500, 1500};
-            med[0] = med[1]; med[1] = med[2]; med[2] = gPulseWidthUsA;
-            uint32_t a = med[0], b = med[1], c = med[2];
-            if (a > b) { uint32_t t = a; a = b; b = t; }
-            if (b > c) { uint32_t t = b; b = c; c = t; }
-            if (a > b) { uint32_t t = a; a = b; b = t; }
-            gServoOutA.writeMicroseconds((int)b);
-        }
-        {
-            static uint32_t med[3] = {1500, 1500, 1500};
-            med[0] = med[1]; med[1] = med[2]; med[2] = gPulseWidthUsB;
-            uint32_t a = med[0], b = med[1], c = med[2];
-            if (a > b) { uint32_t t = a; a = b; b = t; }
-            if (b > c) { uint32_t t = b; b = c; c = t; }
-            if (a > b) { uint32_t t = a; a = b; b = t; }
-            gServoOutB.writeMicroseconds((int)b);
-        }
+        gServoMirror.passthrough();
     } else {
-        // Engaged: run PD controller on pitch (ServoA) and roll (ServoB).
-        uint16_t pwmA = Controller::SERVO_CENTER_US;
-        uint16_t pwmB = Controller::SERVO_CENTER_US;
-        gController.update(snap, pwmA, pwmB);
-        gServoOutA.writeMicroseconds(pwmA);
-        gServoOutB.writeMicroseconds(pwmB);
+        // Engaged: run per-axis control functions defined in ServoMirror.cpp.
+        gServoMirror.controlAxisA(snap);
+        gServoMirror.controlAxisB(snap);
     }
 
     // ── 5. Log ────────────────────────────────────────────────────────────────

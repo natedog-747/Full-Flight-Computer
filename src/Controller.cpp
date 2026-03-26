@@ -17,26 +17,19 @@ void Controller::engage(const SensorData &snap) {
     // no sudden deflection.  Guidance can update these via setTarget*().
     _targetPitch = snap.pitch;
     _targetRoll  = snap.roll;
+
+    // ── Home heading ──────────────────────────────────────────────────────
+    _homeHeading = snap.yaw;   // deg, 0 = North, CW positive
 }
 
-// ── update ────────────────────────────────────────────────────────────────────
-// 1. Refresh all internal state from the KF snapshot.
-// 2. Compute NED position relative to the engage origin.
-// 3. Run PD control on pitch (Axis A) and roll (Axis B).
-// 4. Return servo pulse widths in microseconds.
-//
-// IMU angular-rate mapping (see header for full convention):
-//   pitch rate NED = -snap.gy  [deg/s]   (sensor y = left-wing, NED y = right-wing)
-//   roll  rate NED =  snap.gx  [deg/s]   (sensor x = nose = NED x, no sign flip)
-void Controller::update(const SensorData &snap, uint16_t &pwmA, uint16_t &pwmB) {
-    // ── State update ──────────────────────────────────────────────────────
-
-    // NED position (metres) relative to the engage-point origin
+// ── updateState (shared between both axes) ────────────────────────────────────
+// Refreshes NED position, velocity, attitude, and quaternion from the KF snapshot.
+// Called at the top of each axis update so either method can be used standalone.
+void Controller::updateState(const SensorData &snap) {
     _posN = (snap.kfLat - _refLat) * _Rn;
     _posE = (snap.kfLon - _refLon) * _Re;
-    _posD = _refAlt - snap.kfAlt;   // positive-down: climbs give negative posD
+    _posD = _refAlt - snap.kfAlt;
 
-    // NED velocity and attitude directly from KF
     _velN  = snap.kfVelN;
     _velE  = snap.kfVelE;
     _velD  = snap.kfVelD;
@@ -47,31 +40,36 @@ void Controller::update(const SensorData &snap, uint16_t &pwmA, uint16_t &pwmB) 
     _qx    = snap.qx;
     _qy    = snap.qy;
     _qz    = snap.qz;
+}
 
-    // ── Angular rates (deg/s, NED frame) ─────────────────────────────────
-    // These come straight from the IMU — no differentiation noise.
-    float pitchRate =  -snap.gy;   // NED pitch rate (nose-up positive)
-    float rollRate  =   snap.gx;   // NED roll  rate (right-wing-down positive)
+// ── updateAxisA — pitch / elevator ────────────────────────────────────────────
+//   u = center + Kp*(targetPitch - pitch) - Kd*pitchRate
+//
+// IMU rate mapping:  pitch rate NED = -snap.gy  (sensor y = left-wing, NED y = right-wing)
+// Sign convention:   servo > 1500 µs → nose UP.  Flip KP_A / KD_A signs if reversed.
+uint16_t Controller::updateAxisA(const SensorData &snap) {
+    updateState(snap);
 
-    // ── PD control laws ───────────────────────────────────────────────────
-    //
-    // Axis A — pitch (elevator / ServoA):
-    //   u = center + Kp*(target - pitch) - Kd*pitchRate
-    //
-    // Axis B — roll (aileron / ServoB):
-    //   u = center + Kp*(target - roll) - Kd*rollRate
-    //
-    // KP and KD signs assume: servo > 1500 µs deflects nose-UP / right-wing-DOWN.
-    // Flip the sign of KP_A / KP_B in the header if your linkage is reversed.
+    float yawRate = snap.gz;   // NED yaw rate (CW positive
+    float errYaw  = snap.yaw - _homeHeading;
 
-    float errPitch = _targetPitch - _pitch;
-    float errRoll  = _targetRoll  - _roll;
+    float uA = SERVO_CENTER_US + KP_A * errYaw - KD_A * yawRate;
+    return clampUs(uA);
+}
 
-    float uA = SERVO_CENTER_US + KP_A * errPitch - KD_A * pitchRate;
-    float uB = SERVO_CENTER_US + KP_B * errRoll  - KD_B * rollRate;
+// ── updateAxisB — roll / aileron ──────────────────────────────────────────────
+//   u = center + Kp*(targetRoll - roll) - Kd*rollRate
+//
+// IMU rate mapping:  roll rate NED = snap.gx  (sensor x = nose = NED x, no flip)
+// Sign convention:   servo > 1500 µs → right-wing DOWN.  Flip KP_B / KD_B if reversed.
+uint16_t Controller::updateAxisB(const SensorData &snap) {
+    updateState(snap);
 
-    pwmA = clampUs(uA);
-    pwmB = clampUs(uB);
+    float rollRate = snap.gx;   // NED roll rate (right-wing-down positive)
+    float errRoll  = _targetRoll - _roll;
+
+    float uB = SERVO_CENTER_US + KP_B * errRoll - KD_B * rollRate;
+    return clampUs(uB);
 }
 
 // ── clampUs ───────────────────────────────────────────────────────────────────

@@ -113,8 +113,9 @@ private:
     double    mAccumAx = 0, mAccumAy = 0, mAccumAz = 0;
     uint32_t  mAccumCount     = 0;
     uint32_t  mAwaitYawCount  = 0;  // cycles spent in AWAIT_YAW; timeout → READY
-    float     mInitRoll       = 0.0f;
-    float     mInitPitch      = 0.0f;
+    float     mInitRoll        = 0.0f;
+    float     mInitPitch       = 0.0f;
+    uint32_t  mAwaitYawTicks   = 0;   // predict() calls since AWAIT_YAW; unconditional timeout
 
     // ── Private helpers ───────────────────────────────────────────────────────
     void normalizeQuat();

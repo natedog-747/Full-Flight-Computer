@@ -50,9 +50,10 @@ public:
     void engage(const SensorData &snap);
 
     // Call every loop while engaged.
-    // Refreshes all internal state then runs the PD laws.
-    // pwmA → pitch (ServoA),  pwmB → roll (ServoB).
-    void update(const SensorData &snap, uint16_t &pwmA, uint16_t &pwmB);
+    // Each method refreshes internal state and runs the PD law for its axis.
+    // Returns the servo pulse width in microseconds.
+    uint16_t updateAxisA(const SensorData &snap);   // pitch / elevator
+    uint16_t updateAxisB(const SensorData &snap);   // roll  / aileron
 
     // ── Setpoints (update from a guidance layer as needed) ────────────────────
     void setTargetPitch(float deg) { _targetPitch = deg; }
@@ -71,6 +72,11 @@ public:
     float getVelE()  const { return _velE;  }
     float getVelD()  const { return _velD;  }
 
+    // Home altitude — KF altitude (m) captured at the engage instant.
+    float getHomeAlt()     const { return _refAlt;      }
+    // Home heading — yaw (deg) captured at the engage instant.
+    float getHomeHeading() const { return _homeHeading; }
+
     // Attitude
     float getRoll()  const { return _roll;  }   // deg, positive = right-wing down
     float getPitch() const { return _pitch; }   // deg, positive = nose up
@@ -85,6 +91,7 @@ public:
 private:
     // ── Reference NED origin (set at engage) ─────────────────────────────────
     float _refLat = 0.0f, _refLon = 0.0f, _refAlt = 0.0f;
+    float _homeHeading = 0.0f;   // yaw at engage (deg, 0 = North, CW positive)
     float _Rn = 6.371e6f, _Re = 6.371e6f;   // WGS84 radii at origin
 
     // ── Setpoints ─────────────────────────────────────────────────────────────
@@ -99,6 +106,9 @@ private:
     float _velN = 0.0f, _velE = 0.0f, _velD = 0.0f;
     float _roll  = 0.0f, _pitch = 0.0f, _yaw = 0.0f;
     float _qw = 1.0f, _qx = 0.0f, _qy = 0.0f, _qz = 0.0f;
+
+    // Refresh NED position, velocity, attitude, and quaternion from a snapshot.
+    void updateState(const SensorData &snap);
 
     // Clamp a float µs value to [SERVO_MIN_US, SERVO_MAX_US]
     static uint16_t clampUs(float us);
