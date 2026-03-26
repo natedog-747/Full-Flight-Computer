@@ -13,6 +13,7 @@
 #include "BaroSensor.h"
 #include "SdLogger.h"
 #include "KalmanFilter.h"
+#include "Controller.h"
 
 // ── Configurable update / log rates (milliseconds) ───────────────────────────
 #define IMU_RATE_MS     10   // 100 Hz — also sets how often the GPS UART is drained
@@ -337,10 +338,37 @@ void setup1() {
 }
 
 void loop1() {
-    static TickType_t wake = xTaskGetTickCount();
+    static TickType_t wake        = xTaskGetTickCount();
+    static Controller gController;
+    static bool       prevEngaged = false;
 
-    if (!gEngageActive) {
-        // Mirror both servo inputs → outputs with a 3-sample median filter each.
+    // ── 1. Update engage state from duty-cycle ISR ────────────────────────────
+    // No I2C here — Core 0 owns Wire and handles all PCA9685 transactions.
+    if (gEngageValid) {
+        gEngageActive = (gEngageHighUs >= ENGAGE_THRESHOLD_US);
+    }
+    bool engaged = gEngageActive;
+
+    // ── 2. Grab latest sensor snapshot ───────────────────────────────────────
+    SensorData snap;
+    if (xSemaphoreTake(gDataMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+        snap = gShared;
+        xSemaphoreGive(gDataMutex);
+    }
+
+    // ── 3. Engage edge: latch NED origin and initial setpoints ───────────────
+    if (engaged && !prevEngaged) {
+        // Only engage once the KF is running and has a GPS fix
+        if (snap.kfInitPhase == 2 && snap.gpsFix) {
+            gController.engage(snap);
+            Serial.println("CTRL: engaged");
+        }
+    }
+    prevEngaged = engaged;
+
+    // ── 4. Servo output ───────────────────────────────────────────────────────
+    if (!engaged) {
+        // Passthrough: mirror RC inputs through a 3-sample median filter.
         {
             static uint32_t med[3] = {1500, 1500, 1500};
             med[0] = med[1]; med[1] = med[2]; med[2] = gPulseWidthUsA;
@@ -360,23 +388,16 @@ void loop1() {
             gServoOutB.writeMicroseconds((int)b);
         }
     } else {
-        // Engaged: follow internal commands (90° / 1500 µs centre)
-        gServoOutA.writeMicroseconds(1500);
-        gServoOutB.writeMicroseconds(1500);
+        // Engaged: run PD controller on pitch (ServoA) and roll (ServoB).
+        uint16_t pwmA = Controller::SERVO_CENTER_US;
+        uint16_t pwmB = Controller::SERVO_CENTER_US;
+        gController.update(snap, pwmA, pwmB);
+        gServoOutA.writeMicroseconds(pwmA);
+        gServoOutB.writeMicroseconds(pwmB);
     }
 
-    // Compute engage state from duty cycle and publish to Core 0 via volatile flag.
-    // No I2C here — Core 0 owns Wire and handles all PCA9685 transactions.
-    if (gEngageValid) {
-        gEngageActive = (gEngageHighUs >= ENGAGE_THRESHOLD_US);
-    }
-
-    SensorData snap;
-    if (xSemaphoreTake(gDataMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
-        snap = gShared;
-        xSemaphoreGive(gDataMutex);
-        gLogger.log(snap);
-    }
+    // ── 5. Log ────────────────────────────────────────────────────────────────
+    gLogger.log(snap);
 
     vTaskDelayUntil(&wake, pdMS_TO_TICKS(LOG_RATE_MS));
 }
