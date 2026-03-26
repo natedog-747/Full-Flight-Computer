@@ -13,8 +13,10 @@ void KalmanFilter::reset() {
     memset(mCov, 0, sizeof(mCov));
 
     // Initial diagonal covariance — indices [δp δv δθ δab δwb δbaro]
+    // Position starts at (0,0,0) LLA — large uncertainty so GPS snaps it immediately.
+    const float kSigPosRad = 1.0f;   // ~1 rad planet-scale; first GPS update will correct
     const float diag[16] = {
-        0.0f,   0.0f,   0.0f,    // δp  — start position known (NED origin)
+        kSigPosRad*kSigPosRad, kSigPosRad*kSigPosRad, 1e6f,   // δlat, δlon, δalt
         0.0f,   0.0f,   0.0f,    // δv  — start velocity known (stationary)
         0.1f,   0.1f,   1.0f,    // δθ  — roll/pitch small, yaw unknown
         1e-4f,  1e-4f,  1e-4f,   // δab — small initial accel bias uncertainty
@@ -139,8 +141,12 @@ void KalmanFilter::feedGpsHeading(float speedMs, float headingDeg) {
     for (int i = 0; i < 6; i++)
         for (int j = 0; j < 16; j++)
             mCov[i][j] = mCov[j][i] = 0.0f;
-    mCov[0][0] = mCov[1][1] = mCov[2][2] = 100.0f;  // 10 m std each axis
-    mCov[3][3] = mCov[4][4] = mCov[5][5] =   1.0f;  //  1 m/s std each axis
+    // lat/lon: 10 km std → (10000 / 6.37e6)^2 rad²
+    const float kSig10km = 10000.0f / 6.37e6f;
+    mCov[0][0] = kSig10km * kSig10km;   // lat
+    mCov[1][1] = kSig10km * kSig10km;   // lon
+    mCov[2][2] = 1e6f;                  // alt: 1000 m std (MSL unknown at init)
+    mCov[3][3] = mCov[4][4] = mCov[5][5] = 1.0f;    // 1 m/s std each axis
 
     setQuatFromEuler(mInitRoll, mInitPitch, yawRad);
     mInitPhase = InitPhase::READY;
@@ -171,6 +177,16 @@ void KalmanFilter::predict(float gx, float gy, float gz,
     mQuat[3] += 0.5f * ( qw*wz + qx*wy - qy*wx) * dt;
     normalizeQuat();
 
+    // ── WGS84 Earth radii at current latitude ─────────────────────────────
+    static constexpr float kAe = 6378137.0f;
+    static constexpr float ke2 = 0.00669437999014f;
+    float sinLat = sinf(mPos[0]);
+    float denom  = 1.0f - ke2 * sinLat * sinLat;
+    float Rn = kAe * (1.0f - ke2) / (denom * sqrtf(denom));   // meridional
+    float Re = kAe / sqrtf(denom) * cosf(mPos[0]);             // east (arc)
+    if (Rn < 1.0f) Rn = 1.0f;
+    if (Re < 1.0f) Re = 1.0f;
+
     // ── Body-to-NED DCM from updated quaternion (Sola eq.115) ─────────────
     float R[3][3];
     buildDCM(R);
@@ -181,10 +197,13 @@ void KalmanFilter::predict(float gx, float gy, float gz,
     float aE = R[1][0]*acx + R[1][1]*acy + R[1][2]*acz;
     float aD = R[2][0]*acx + R[2][1]*acy + R[2][2]*acz + kG;
 
-    // ── Position and velocity integration ─────────────────────────────────
-    mPos[0] += mVel[0]*dt + 0.5f*aN*dt*dt;
-    mPos[1] += mVel[1]*dt + 0.5f*aE*dt*dt;
-    mPos[2] += mVel[2]*dt + 0.5f*aD*dt*dt;
+    // ── LLA position and NED velocity integration ─────────────────────────
+    // lat += (vN*dt + 0.5*aN*dt²) / Rn
+    // lon += (vE*dt + 0.5*aE*dt²) / Re
+    // alt -= (vD*dt + 0.5*aD*dt²)   [vD positive-down, alt positive-up]
+    mPos[0] += (mVel[0]*dt + 0.5f*aN*dt*dt) / Rn;
+    mPos[1] += (mVel[1]*dt + 0.5f*aE*dt*dt) / Re;
+    mPos[2] -= (mVel[2]*dt + 0.5f*aD*dt*dt);
     mVel[0] += aN*dt;
     mVel[1] += aE*dt;
     mVel[2] += aD*dt;
@@ -215,11 +234,12 @@ void KalmanFilter::predict(float gx, float gy, float gz,
 
     float dP[16][16] = {};
 
-    // Fc[δp, δv] = I
+    // Fc[δp, δv] = T_gps = diag(1/Rn, 1/Re, -1)
+    // dlat = dvN/Rn,  dlon = dvE/Re,  dalt = -dvD
     for (int j = 0; j < 16; j++) {
-        dP[0][j] += mCov[3][j];
-        dP[1][j] += mCov[4][j];
-        dP[2][j] += mCov[5][j];
+        dP[0][j] += mCov[3][j] / Rn;
+        dP[1][j] += mCov[4][j] / Re;
+        dP[2][j] -= mCov[5][j];
     }
 
     // Fc[δv, δθ] = Mvt, Fc[δv, δab] = -R
@@ -340,23 +360,36 @@ bool KalmanFilter::mat5Invert(float A[5][5], float Ainv[5][5]) {
 }
 
 // ── updateFromGPS ─────────────────────────────────────────────────────────────
-// 5-measurement update: posN, posE, posD, velN, velE.
-// H (5×16): identity block selecting state indices 0..4 (δp + δv_NE).
+// 5-measurement update: lat, lon, alt, velN, velE.
+// H (5×16): identity block selecting state indices 0..4 (δp_LLA + δv_NE).
 // Followed by optional 1-measurement yaw update from course-over-ground.
-void KalmanFilter::updateFromGPS(float posN, float posE, float posD,
+void KalmanFilter::updateFromGPS(float lat, float lon, float alt,
                                   float velN, float velE,
                                   float hdop, float headingDeg, float speedMs) {
     if (mInitPhase != InitPhase::READY) return;
 
+    // ── WGS84 Earth radii for measurement noise conversion ────────────────
+    static constexpr float kAe = 6378137.0f;
+    static constexpr float ke2 = 0.00669437999014f;
+    float sinLat = sinf(mPos[0]);
+    float denom  = 1.0f - ke2 * sinLat * sinLat;
+    float Rn = kAe * (1.0f - ke2) / (denom * sqrtf(denom));
+    float Re = kAe / sqrtf(denom) * cosf(mPos[0]);
+    if (Rn < 1.0f) Rn = 1.0f;
+    if (Re < 1.0f) Re = 1.0f;
+
     // ── Part 1: position + velocity update (5D) ────────────────────────────
     // Clamp HDOP to minimum 1.0 so measurement noise never collapses to zero.
     float hdopEff = (hdop < 1.0f) ? 1.0f : hdop;
-    float rp2 = (SIGMA_GPS_POS * hdopEff) * (SIGMA_GPS_POS * hdopEff);
-    float rv2 = (SIGMA_GPS_VEL * hdopEff) * (SIGMA_GPS_VEL * hdopEff);
+    float sigPos  = SIGMA_GPS_POS * hdopEff;
+    float rp2_lat = (sigPos / Rn) * (sigPos / Rn);   // rad²
+    float rp2_lon = (sigPos / Re) * (sigPos / Re);   // rad²
+    float rp2_alt = sigPos * sigPos;                  // m²
+    float rv2     = (SIGMA_GPS_VEL * hdopEff) * (SIGMA_GPS_VEL * hdopEff);
 
     // Innovation: measured - nominal
     float innov[5] = {
-        posN - mPos[0], posE - mPos[1], posD - mPos[2],
+        lat - mPos[0], lon - mPos[1], alt - mPos[2],
         velN - mVel[0], velE - mVel[1]
     };
 
@@ -371,8 +404,8 @@ void KalmanFilter::updateFromGPS(float posN, float posE, float posD,
     for (int i = 0; i < 5; i++)
         for (int j = 0; j < 5; j++)
             S[i][j] = mCov[i][j];
-    S[0][0] += rp2; S[1][1] += rp2; S[2][2] += rp2;
-    S[3][3] += rv2; S[4][4] += rv2;
+    S[0][0] += rp2_lat; S[1][1] += rp2_lon; S[2][2] += rp2_alt;
+    S[3][3] += rv2;     S[4][4] += rv2;
 
     float Sinv[5][5];
     if (!mat5Invert(S, Sinv)) return;
@@ -439,21 +472,22 @@ void KalmanFilter::updateFromGPS(float posN, float posE, float posD,
 void KalmanFilter::updateFromBarometer(float altM) {
     if (mInitPhase != InitPhase::READY) return;
 
-    float nomAlt = -mPos[2] + mBaroBias;
+    // mPos[2] is alt (positive-up), so nomAlt = alt + baroBias
+    float nomAlt = mPos[2] + mBaroBias;
     float innov  = altM - nomAlt;
 
-    // S = H·P·H^T + R
-    float Sbaro = mCov[2][2] - mCov[2][15] - mCov[15][2] + mCov[15][15]
+    // H[2]=+1, H[15]=+1  →  S = P[2][2] + P[2][15] + P[15][2] + P[15][15] + R
+    float Sbaro = mCov[2][2] + mCov[2][15] + mCov[15][2] + mCov[15][15]
                   + SIGMA_BARO_MEAS * SIGMA_BARO_MEAS;
     if (Sbaro < 1e-9f) return;
 
-    // Save H·P = -P[2,:] + P[15,:] before the update.
+    // Save H·P = P[2,:] + P[15,:] before the update.
     float HP_baro[16];
-    for (int j = 0; j < 16; j++) HP_baro[j] = -mCov[2][j] + mCov[15][j];
+    for (int j = 0; j < 16; j++) HP_baro[j] = mCov[2][j] + mCov[15][j];
 
     float dxBaro[16] = {};
     for (int i = 0; i < 16; i++) {
-        float Ki = (-mCov[i][2] + mCov[i][15]) / Sbaro;
+        float Ki = (mCov[i][2] + mCov[i][15]) / Sbaro;
         dxBaro[i] = Ki * innov;
         for (int j = 0; j < 16; j++) mCov[i][j] -= Ki * HP_baro[j];
     }
@@ -479,8 +513,8 @@ void KalmanFilter::getEulerDeg(float &roll, float &pitch, float &yaw) const {
     yaw = atan2f(2.0f*(w*z + x*y), 1.0f - 2.0f*(y*y + z*z)) * (180.0f / 3.14159265f);
 }
 
-void KalmanFilter::getPosition(float &posN, float &posE, float &posD) const {
-    posN = mPos[0]; posE = mPos[1]; posD = mPos[2];
+void KalmanFilter::getPosition(float &lat, float &lon, float &alt) const {
+    lat = mPos[0]; lon = mPos[1]; alt = mPos[2];
 }
 
 void KalmanFilter::getVelocity(float &velN, float &velE, float &velD) const {

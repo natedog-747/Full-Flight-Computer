@@ -20,15 +20,14 @@ struct SensorData {
     BmpPhase bmpPhase        = BmpPhase::WARMUP;
     uint32_t bmpSettleRemSec = 0;
 
-    // GPS — NED frame (metres from averaged origin)
+    // GPS — geodetic (LLA)
     bool     gpsFix        = false;
-    bool     gpsOrigin     = false;  // true once 10-s origin average is locked
-    uint32_t gpsAvgRemSec  = 0;      // seconds left in origin-averaging window
-    float    nedN = 0, nedE = 0, nedD = 0;
-    // NED velocity components derived from speed/course over ground.
-    // velD is always 0 — vertical velocity is not in standard NMEA.
+    float    gpsLat        = 0;   // radians
+    float    gpsLon        = 0;   // radians
+    float    gpsAlt        = 0;   // metres above ellipsoid
+    // NED velocity derived from speed/course over ground (velD always 0 — not in NMEA)
     float    velN_ms = 0, velE_ms = 0, velD_ms = 0;
-    float    gpsSpeedMs    = 0;   // overall speed over ground (m/s)
+    float    gpsSpeedMs    = 0;   // speed over ground (m/s)
     float    gpsHeadingDeg = 0;
     uint8_t  gpsSats       = 0;
     float    gpsHDOP       = 0;
@@ -39,8 +38,8 @@ struct SensorData {
     float qw = 1, qx = 0, qy = 0, qz = 0;  // body-to-NED quaternion [w,x,y,z]
     float roll = 0, pitch = 0, yaw = 0;     // deg — roll(x), pitch(y), yaw(z)
 
-    // KF dead-reckoning navigation (NED frame, metres and m/s)
-    float kfPosN = 0, kfPosE = 0, kfPosD = 0;
+    // KF dead-reckoning navigation (geodetic LLA + NED velocity)
+    float kfLat = 0, kfLon = 0, kfAlt = 0;   // rad, rad, m
     float kfVelN = 0, kfVelE = 0, kfVelD = 0;
     float kfBaroBias = 0;  // barometer bias estimate (m)
 

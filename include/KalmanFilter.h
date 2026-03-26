@@ -5,25 +5,28 @@
 // ── Error-State Kalman Filter (ESKF) ─────────────────────────────────────────
 //
 // Nominal state (16 scalars):
-//   pos[3]       – NED position   (m)
-//   vel[3]       – NED velocity   (m/s)
+//   pos[3]       – geodetic LLA: [lat(rad), lon(rad), alt(m)]
+//   vel[3]       – NED velocity  (m/s)
 //   q[4]         – body-to-NED quaternion [w, x, y, z]
 //   biasAccel[3] – IMU accel bias (m/s²)
 //   biasGyro[3]  – IMU gyro bias  (rad/s)
 //   baroBias     – baro bias      (m)
 //
 // Error state δx (16-D):
-//   δp   [0-2]  – position error        (m)
-//   δv   [3-5]  – velocity error        (m/s)
-//   δθ   [6-8]  – attitude error        (rad, small-angle, NED local frame)
+//   δp   [0-2]  – position error  [δlat(rad), δlon(rad), δalt(m)]
+//   δv   [3-5]  – velocity error  (m/s, NED)
+//   δθ   [6-8]  – attitude error  (rad, small-angle, NED local frame)
 //   δab  [9-11] – IMU accel bias error  (m/s²)
 //   δwb [12-14] – IMU gyro bias error   (rad/s)
 //   δbb  [15]   – baro bias error       (m)
 //
+// Position propagation uses WGS84 Earth radii (Rn, Re) to couple NED velocity
+// to LLA rates:  dlat = vN/Rn·dt,  dlon = vE/Re·dt,  dalt = -vD·dt
+//
 // Propagation: Fx ≈ I + Fc·dt  (first-order discrete, Sola §5.4)
 // Noise:       P += (Fc·P + P·Fc^T)·dt + Qd
 //
-// Reference: Sola, "A micro Lie theory" (arXiv:1711.02508)
+// Reference: Sola, "Quaternion kinematics for the error-state KF" (arXiv:1711.02508)
 // ─────────────────────────────────────────────────────────────────────────────
 
 class KalmanFilter {
@@ -72,9 +75,9 @@ public:
 
     // ── Measurement updates (call ONLY when new sensor data arrives) ─────────
 
-    // GPS position (m NED from locked origin), NED velocity (m/s, velD ignored),
+    // GPS geodetic position (lat rad, lon rad, alt m), NED velocity (m/s, velD ignored),
     // HDOP, heading (deg 0=North CW), speed (m/s).
-    void updateFromGPS(float posN, float posE, float posD,
+    void updateFromGPS(float lat, float lon, float alt,
                        float velN, float velE,
                        float hdop, float headingDeg, float speedMs);
 
@@ -87,7 +90,7 @@ public:
 
     void getQuaternion(float &w, float &x, float &y, float &z) const;
     void getEulerDeg(float &roll, float &pitch, float &yaw) const;
-    void getPosition(float &posN, float &posE, float &posD) const;
+    void getPosition(float &lat, float &lon, float &alt) const;
     void getVelocity(float &velN, float &velE, float &velD) const;
     void getGyroBias(float &bgx, float &bgy, float &bgz) const;
     float getBaroBias() const { return mBaroBias; }

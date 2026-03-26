@@ -24,10 +24,10 @@ bool SdLogger::begin() {
         Serial.printf("Logging to %s\n", _fname);
         _file.println("ms,ax,ay,az,gx,gy,gz,calSys,calGyro,calAccel,calMag,"
                       "relAltM,bmpPhase,bmpSettleRemSec,"
-                      "gpsFix,gpsOrigin,gpsAvgRemSec,nedN,nedE,nedD,"
+                      "gpsFix,gpsLat_rad,gpsLon_rad,gpsAlt_m,"
                       "velN_ms,velE_ms,velD_ms,gpsSpeedMs,gpsHeadingDeg,gpsSats,gpsHDOP,"
                       "dtMs,qw,qx,qy,qz,roll,pitch,yaw,"
-                      "kfPosN,kfPosE,kfPosD,kfVelN,kfVelE,kfVelD,kfBaroBias");
+                      "kfLat_rad,kfLon_rad,kfAlt_m,kfVelN,kfVelE,kfVelD,kfBaroBias");
         _file.close();
         _ready = true;
     } else {
@@ -49,23 +49,23 @@ void SdLogger::log(const SensorData &data) {
                 "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,"
                 "%u,%u,%u,%u,"
                 "%.3f,%s,%lu,"
-                "%u,%u,%lu,%.3f,%.3f,%.3f,"
+                "%u,%.8f,%.8f,%.3f,"
                 "%.3f,%.3f,%.3f,%.3f,%.3f,%u,%.2f,"
                 "%.3f,%.4f,%.4f,%.4f,%.4f,%.2f,%.2f,%.2f,"
-                "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+                "%.8f,%.8f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
                 data.timestampMs,
                 data.ax,  data.ay,  data.az,
                 data.gx,  data.gy,  data.gz,
                 data.calSys, data.calGyro, data.calAccel, data.calMag,
                 data.relAltM, phases[(uint8_t)data.bmpPhase], data.bmpSettleRemSec,
-                (uint8_t)data.gpsFix, (uint8_t)data.gpsOrigin, data.gpsAvgRemSec,
-                data.nedN, data.nedE, data.nedD,
+                (uint8_t)data.gpsFix,
+                data.gpsLat, data.gpsLon, data.gpsAlt,
                 data.velN_ms, data.velE_ms, data.velD_ms,
                 data.gpsSpeedMs, data.gpsHeadingDeg, data.gpsSats, data.gpsHDOP,
                 data.dtMs,
                 data.qw, data.qx, data.qy, data.qz,
                 data.roll, data.pitch, data.yaw,
-                data.kfPosN, data.kfPosE, data.kfPosD,
+                data.kfLat, data.kfLon, data.kfAlt,
                 data.kfVelN, data.kfVelE, data.kfVelD,
                 data.kfBaroBias);
             _file.close();
@@ -99,30 +99,27 @@ void SdLogger::log(const SensorData &data) {
 
         // KF navigation line
         Serial.printf(
-            "%s [KF:NAV] N=%+8.3fm E=%+8.3fm D=%+7.3fm | "
+            "%s [KF:NAV] lat=%.6f lon=%.6f alt=%.1fm | "
             "vN=%+6.2f vE=%+6.2f vD=%+6.2f m/s | baroBias=%+.3fm\n",
             tag,
-            data.kfPosN, data.kfPosE, data.kfPosD,
+            data.kfLat * (180.0f / 3.14159265f),
+            data.kfLon * (180.0f / 3.14159265f),
+            data.kfAlt,
             data.kfVelN, data.kfVelE, data.kfVelD,
             data.kfBaroBias);
 
         // GPS line
         if (!data.gpsFix) {
             Serial.printf("%s GPS: NO FIX\n", tag);
-        } else if (!data.gpsOrigin) {
-            Serial.printf(
-                "%s GPS: FIX %usats HDOP=%.2f | AVERAGING ORIGIN (%lus rem) | "
-                "vN=%+6.2f vE=%+6.2f m/s spd=%5.2fm/s hdg=%5.1fdeg\n",
-                tag, data.gpsSats, data.gpsHDOP, data.gpsAvgRemSec,
-                data.velN_ms, data.velE_ms,
-                data.gpsSpeedMs, data.gpsHeadingDeg);
         } else {
             Serial.printf(
-                "%s GPS: N=%+8.3fm E=%+8.3fm D=%+7.3fm | "
+                "%s GPS: lat=%.6f lon=%.6f alt=%.1fm | "
                 "vN=%+6.2f vE=%+6.2f vD=%+6.2f m/s | "
                 "spd=%5.2fm/s hdg=%5.1fdeg | %usats HDOP=%.2f\n",
                 tag,
-                data.nedN, data.nedE, data.nedD,
+                data.gpsLat * (180.0f / 3.14159265f),
+                data.gpsLon * (180.0f / 3.14159265f),
+                data.gpsAlt,
                 data.velN_ms, data.velE_ms, data.velD_ms,
                 data.gpsSpeedMs, data.gpsHeadingDeg,
                 data.gpsSats, data.gpsHDOP);

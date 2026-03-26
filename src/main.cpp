@@ -147,9 +147,9 @@ static void taskSensors(void *) {
             gGps.update(gpsLocal);
         }
 
-        // GPS Kalman measurement update — only when a fresh NED fix is available
-        if (gpsLocal.gpsNewData && gpsLocal.gpsOrigin) {
-            gKF.updateFromGPS(gpsLocal.nedN, gpsLocal.nedE, gpsLocal.nedD,
+        // GPS Kalman measurement update — only when a fresh fix is available
+        if (gpsLocal.gpsNewData && gpsLocal.gpsFix) {
+            gKF.updateFromGPS(gpsLocal.gpsLat, gpsLocal.gpsLon, gpsLocal.gpsAlt,
                               gpsLocal.velN_ms, gpsLocal.velE_ms,
                               gpsLocal.gpsHDOP,
                               gpsLocal.gpsHeadingDeg, gpsLocal.gpsSpeedMs);
@@ -188,7 +188,7 @@ static void taskSensors(void *) {
 
             gKF.getQuaternion(imuLocal.qw, imuLocal.qx, imuLocal.qy, imuLocal.qz);
             gKF.getEulerDeg(imuLocal.roll, imuLocal.pitch, imuLocal.yaw);
-            gKF.getPosition(imuLocal.kfPosN, imuLocal.kfPosE, imuLocal.kfPosD);
+            gKF.getPosition(imuLocal.kfLat, imuLocal.kfLon, imuLocal.kfAlt);
             gKF.getVelocity(imuLocal.kfVelN, imuLocal.kfVelE, imuLocal.kfVelD);
             imuLocal.kfInitPhase = (uint8_t)gKF.getInitPhase();
             imuLocal.kfBaroBias  = gKF.getBaroBias();
@@ -229,11 +229,9 @@ static void taskSensors(void *) {
         // ── Publish to shared snapshot ───────────────────────────────────────
         if (xSemaphoreTake(gDataMutex, 0) == pdTRUE) {
             gShared.gpsFix        = gpsLocal.gpsFix;
-            gShared.gpsOrigin     = gpsLocal.gpsOrigin;
-            gShared.gpsAvgRemSec  = gpsLocal.gpsAvgRemSec;
-            gShared.nedN          = gpsLocal.nedN;
-            gShared.nedE          = gpsLocal.nedE;
-            gShared.nedD          = gpsLocal.nedD;
+            gShared.gpsLat        = gpsLocal.gpsLat;
+            gShared.gpsLon        = gpsLocal.gpsLon;
+            gShared.gpsAlt        = gpsLocal.gpsAlt;
             gShared.velN_ms       = gpsLocal.velN_ms;
             gShared.velE_ms       = gpsLocal.velE_ms;
             gShared.velD_ms       = gpsLocal.velD_ms;
@@ -261,9 +259,9 @@ static void taskSensors(void *) {
             gShared.roll          = imuLocal.roll;
             gShared.pitch         = imuLocal.pitch;
             gShared.yaw           = imuLocal.yaw;
-            gShared.kfPosN        = imuLocal.kfPosN;
-            gShared.kfPosE        = imuLocal.kfPosE;
-            gShared.kfPosD        = imuLocal.kfPosD;
+            gShared.kfLat         = imuLocal.kfLat;
+            gShared.kfLon         = imuLocal.kfLon;
+            gShared.kfAlt         = imuLocal.kfAlt;
             gShared.kfVelN        = imuLocal.kfVelN;
             gShared.kfVelE        = imuLocal.kfVelE;
             gShared.kfVelD        = imuLocal.kfVelD;
