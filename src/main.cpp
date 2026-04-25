@@ -433,7 +433,9 @@ void loop1() {
         }
     } else if (!ctrlReady) {
         // Switch in engage zone — engage immediately (bumpless transfer).
-        gController.engage(snap);
+        // Pass raw RC-B input so the altitude PI starts from the current stick
+        // position rather than 1500 µs, preventing a servo jump on takeover.
+        gController.engage(snap, (uint16_t)gServoMirror.getRawInput(ServoMirror::SERVO_B));
         ctrlReady = true;
 
         static constexpr float kR2D = 180.0f / 3.14159265f;

@@ -5,7 +5,7 @@
 // Captures the KF LLA position as the NED reference origin.
 // Latches current attitude as initial setpoints so the first update() produces
 // zero control error (bumpless transfer — no servo jerk on engage).
-void Controller::engage(const SensorData &snap) {
+void Controller::engage(const SensorData &snap, uint16_t rcInputB) {
     // ── NED origin ────────────────────────────────────────────────────────
     _refLat = snap.kfLat;
     _refLon = snap.kfLon;
@@ -20,6 +20,13 @@ void Controller::engage(const SensorData &snap) {
 
     // ── Home heading ──────────────────────────────────────────────────────
     _homeHeading = snap.yaw;   // deg, 0 = North, CW positive
+
+    // ── Axis-B RC centre — bumpless transfer for altitude servo ──────────
+    // Output is relative to this value so the servo does not jump on engage.
+    // Clamp to a sane range in case of a stale / noisy RC reading.
+    if (rcInputB < SERVO_MIN_US) rcInputB = SERVO_MIN_US;
+    if (rcInputB > SERVO_MAX_US) rcInputB = SERVO_MAX_US;
+    _rcCenterB = rcInputB;
 
     _integA    = 0.0f;   // clear integrators on every engage for bumpless transfer
     _integB    = 0.0f;
@@ -122,7 +129,10 @@ uint16_t Controller::updateAxisB(const SensorData &snap) {
     if (integContrib < -INTEG_LIMIT_B) integContrib = -INTEG_LIMIT_B;
 
     // ── PI output (negated — servo is physically reversed) ────────────────
-    float uB = SERVO_CENTER_US - (KP_B * errAlt + integContrib);
+    // Output is offset from _rcCenterB (RC input captured at engage) so there
+    // is no servo jump on takeover.  clampCtrl still limits ±CTRL_LIMIT_US
+    // around SERVO_CENTER_US for absolute authority bounds.
+    float uB = (float)_rcCenterB - (KP_B * errAlt + integContrib);
     return clampCtrl(uB);
 }
 

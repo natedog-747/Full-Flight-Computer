@@ -55,7 +55,9 @@ public:
     // Call exactly once on the engage rising edge.
     // Captures KF LLA as NED origin, WGS84 Earth radii, and latches current
     // pitch/roll as the initial setpoints (smooth takeover — no sudden jerk).
-    void engage(const SensorData &snap);
+    // rcInputB is the raw RC servo-B pulse width (µs) at the moment of engagement;
+    // it becomes the PI output center so the servo does not jump on takeover.
+    void engage(const SensorData &snap, uint16_t rcInputB);
 
     // Call when the engage switch turns off.  Clears the internal engaged flag
     // so updateAxisA/B cannot output control even if called accidentally.
@@ -113,8 +115,9 @@ private:
     bool _isEngaged = false;   // set true only by engage(), cleared by disengage()
 
     // ── Reference NED origin (set at engage) ─────────────────────────────────
-    float _refLat = 0.0f, _refLon = 0.0f, _refAlt = 0.0f;
-    float _homeHeading = 0.0f;   // yaw at engage (deg, 0 = North, CW positive)
+    float    _refLat = 0.0f, _refLon = 0.0f, _refAlt = 0.0f;
+    float    _homeHeading = 0.0f;   // yaw at engage (deg, 0 = North, CW positive)
+    uint16_t _rcCenterB   = SERVO_CENTER_US;  // RC input on axis B captured at engage
     float _Rn = 6.371e6f, _Re = 6.371e6f;   // WGS84 radii at origin
 
     // ── Setpoints ─────────────────────────────────────────────────────────────
