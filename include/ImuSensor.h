@@ -1,25 +1,30 @@
 #pragma once
-#include <Wire.h>
 #include <Adafruit_BNO055.h>
-#include "SensorData.h"
+#include <Wire.h>
+#include <math.h>
 
 class ImuSensor {
 public:
-    explicit ImuSensor(TwoWire &wire = Wire, uint8_t addr = BNO055_ADDRESS_A);
+    float roll      = 0.0f;
+    float pitch     = 0.0f;
+    float yaw       = 0.0f;
+    bool  calibrating = true;
 
-    // Call once before first read(); Wire must be initialised beforehand
+    ImuSensor();
     bool begin();
-
-    // Single burst I2C read: 18 bytes from 0x08 (accel + mag skip + gyro).
-    // ~450 µs at 400 kHz. Writes ax/ay/az/gx/gy/gz + timestamp into out.
-    void read(SensorData &out);
-
-    // Cheap register read; call at ~1 Hz to avoid I2C overhead
-    void getCalibration(uint8_t &sys, uint8_t &gyro,
-                        uint8_t &accel, uint8_t &mag);
+    void update();
 
 private:
     Adafruit_BNO055 _bno;
-    TwoWire        &_wire;
-    uint8_t         _addr;
+
+    float    _qw, _qx, _qy, _qz;
+    double   _accelSumX, _accelSumY, _accelSumZ;
+    int      _calibN;
+    uint32_t _calibStartMs;
+    uint32_t _lastMicros;
+    uint32_t _lastTick;
+
+    void _initFromAccel(float ax, float ay, float az);
+    void _integrateGyro(float wx, float wy, float wz, float dt);
+    void _quatToEuler();
 };
