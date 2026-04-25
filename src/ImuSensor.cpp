@@ -51,6 +51,9 @@ void ImuSensor::update() {
     float ay = SIGN_BODY_Y * (int16_t)((buf[5]  << 8) | buf[4])  / 100.0f; // sensor Z → body Y (right wing)
     float az = SIGN_BODY_Z * (int16_t)((buf[3]  << 8) | buf[2])  / 100.0f; // sensor Y → body Z (down)
 
+    accelX    = ax;
+    accelNorm = sqrtf(ax*ax + ay*ay + az*az);
+
     // Gyro: same axis remapping, convert deg/s → rad/s for integration
     static const float DEG2RAD = M_PI / 180.0f;
     float wx = SIGN_BODY_X * (int16_t)((buf[13] << 8) | buf[12]) / 16.0f * DEG2RAD; // sensor Wx → body Wx
@@ -122,6 +125,14 @@ void ImuSensor::_integrateGyro(float wx, float wy, float wz, float dt) {
 
     float norm = sqrtf(_qw*_qw + _qx*_qx + _qy*_qy + _qz*_qz);
     if (norm > 1e-6f) { _qw /= norm; _qx /= norm; _qy /= norm; _qz /= norm; }
+}
+
+void ImuSensor::restartCalibration() {
+    _accelSumX    = 0; _accelSumY = 0; _accelSumZ = 0;
+    _calibN       = 0;
+    _calibStartMs = millis();
+    _lastTick     = 0;
+    calibrating   = true;
 }
 
 void ImuSensor::_quatToEuler() {

@@ -5,14 +5,17 @@
 
 class ImuSensor {
 public:
-    float roll      = 0.0f;
-    float pitch     = 0.0f;
-    float yaw       = 0.0f;
+    float roll        = 0.0f;
+    float pitch       = 0.0f;
+    float yaw         = 0.0f;
+    float accelX      = 0.0f;  // body X (nose) acceleration, m/s²
+    float accelNorm   = 0.0f;  // magnitude of accelerometer reading, m/s²
     bool  calibrating = true;
 
     ImuSensor();
     bool begin();
     void update();
+    void restartCalibration();
 
 private:
     Adafruit_BNO055 _bno;

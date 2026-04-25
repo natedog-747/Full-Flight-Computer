@@ -4,18 +4,19 @@
 #include <Adafruit_NeoPixel.h>
 #include <Wire.h>
 #include "ImuSensor.h"
+#include "FlightStateMachine.h"
 
 #ifndef PIN_NEOPIXEL
 #define PIN_NEOPIXEL 8
 #endif
 
-static const uint32_t LOOP_HZ   = 20;
-static const uint32_t LOOP_MS   = 50 / LOOP_HZ;
+static const uint32_t LOOP_HZ = 20;
+static const uint32_t LOOP_MS = 50 / LOOP_HZ;
 
-Adafruit_NeoPixel pixel(1, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
-ImuSensor imuSensor;
+Adafruit_NeoPixel   pixel(1, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
+ImuSensor           imuSensor;
+FlightStateMachine  stateMachine;
 
-static uint16_t   hue           = 0;
 static TickType_t xLastWakeTime;
 
 // ── Core 0 ───────────────────────────────────────────────────────────────────
@@ -39,27 +40,39 @@ void setup() {
         while (1) vTaskDelay(portMAX_DELAY);
     }
     Serial.println("BNO055 ready");
-    Serial.println("Hold still — calibrating 5 s...");
+    Serial.println("Hold still — calibrating 10 s...");
 
     xLastWakeTime = xTaskGetTickCount();
 }
 
 void loop() {
-    // NeoPixel rainbow
-    pixel.setPixelColor(0, pixel.gamma32(pixel.ColorHSV(hue)));
-    pixel.show();
-    hue += 256;
+    FlightState prevState = stateMachine.state;
 
     imuSensor.update();
+    stateMachine.update(imuSensor.calibrating, imuSensor.roll, imuSensor.pitch, imuSensor.accelNorm, imuSensor.accelX);
 
-    if (!imuSensor.calibrating) {
-        static uint32_t lastOrientPrintMs = 0;
-        uint32_t now_ms = millis();
-        if (now_ms - lastOrientPrintMs >= 100) {
-            lastOrientPrintMs = now_ms;
-            Serial.print("Roll: ");    Serial.print(imuSensor.roll,  2);
-            Serial.print("  Pitch: "); Serial.print(imuSensor.pitch, 2);
-            Serial.print("  Yaw: ");   Serial.println(imuSensor.yaw, 2);
+    // On FLIGHT → CALIBRATION transition, restart the IMU calibration routine
+    if (prevState == FlightState::FLIGHT && stateMachine.state == FlightState::CALIBRATION) {
+        imuSensor.restartCalibration();
+        Serial.println("High-G event — recalibrating...");
+    }
+
+    // NeoPixel reflects flight state
+    pixel.setPixelColor(0, pixel.gamma32(stateMachine.getLedColor()));
+    pixel.show();
+
+    // Serial orientation output while not calibrating
+    if (stateMachine.state != FlightState::CALIBRATION) {
+        static uint32_t lastPrintMs = 0;
+        uint32_t now = millis();
+        if (now - lastPrintMs >= 100) {
+            lastPrintMs = now;
+            Serial.print("State: ");
+            Serial.print(stateMachine.state == FlightState::STANDBY ? "STANDBY" : "FLIGHT");
+            Serial.print("  Roll: ");    Serial.print(imuSensor.roll,  2);
+            Serial.print("  Pitch: ");  Serial.print(imuSensor.pitch, 2);
+            Serial.print("  Yaw: ");    Serial.print(imuSensor.yaw,   2);
+            Serial.print("  |a|: ");    Serial.println(imuSensor.accelNorm, 2);
         }
     }
 
