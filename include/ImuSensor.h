@@ -10,6 +10,8 @@ public:
     float yaw         = 0.0f;
     float accelX      = 0.0f;  // body X (nose) acceleration, m/s²
     float accelNorm   = 0.0f;  // magnitude of accelerometer reading, m/s²
+    float pitchRate   = 0.0f;  // body Y-axis angular rate, deg/s (nose-up positive)
+    float yawRate     = 0.0f;  // body Z-axis angular rate, deg/s (nose-right positive)
     bool  calibrating = true;
 
     ImuSensor();

@@ -5,6 +5,7 @@
 #include <Wire.h>
 #include "ImuSensor.h"
 #include "FlightStateMachine.h"
+#include "Control.h"
 
 #ifndef PIN_NEOPIXEL
 #define PIN_NEOPIXEL 8
@@ -16,6 +17,7 @@ static const uint32_t LOOP_MS = 50 / LOOP_HZ;
 Adafruit_NeoPixel   pixel(1, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
 ImuSensor           imuSensor;
 FlightStateMachine  stateMachine;
+Control             control;
 
 static TickType_t xLastWakeTime;
 
@@ -39,6 +41,7 @@ void setup() {
     if (!imuSensor.begin()) {
         while (1) vTaskDelay(portMAX_DELAY);
     }
+    control.begin();
     Serial.println("BNO055 ready");
     Serial.println("Hold still — calibrating 10 s...");
 
@@ -50,6 +53,9 @@ void loop() {
 
     imuSensor.update();
     stateMachine.update(imuSensor.calibrating, imuSensor.roll, imuSensor.pitch, imuSensor.accelNorm, imuSensor.accelX);
+    control.update(imuSensor.pitch, imuSensor.pitchRate,
+                   imuSensor.yaw,   imuSensor.yawRate,
+                   imuSensor.accelX, stateMachine.state == FlightState::FLIGHT);
 
     // On FLIGHT → CALIBRATION transition, restart the IMU calibration routine
     if (prevState == FlightState::FLIGHT && stateMachine.state == FlightState::CALIBRATION) {
@@ -72,7 +78,14 @@ void loop() {
             Serial.print("  Roll: ");    Serial.print(imuSensor.roll,  2);
             Serial.print("  Pitch: ");  Serial.print(imuSensor.pitch, 2);
             Serial.print("  Yaw: ");    Serial.print(imuSensor.yaw,   2);
-            Serial.print("  |a|: ");    Serial.println(imuSensor.accelNorm, 2);
+            Serial.print("  |a|: ");      Serial.print(imuSensor.accelNorm, 2);
+            Serial.print("  PRate: ");    Serial.print(imuSensor.pitchRate, 1);
+            Serial.print("  PErr: ");     Serial.print(control.dbgPitchErr, 2);
+            Serial.print("  P: ");        Serial.print(control.dbgPitchP, 2);
+            Serial.print("  I: ");        Serial.print(control.dbgPitchI, 2);
+            Serial.print("  D: ");        Serial.print(control.dbgPitchD, 2);
+            Serial.print("  PSrv: ");     Serial.print(control.pitchOut);
+            Serial.print("  YSrv: ");     Serial.println(control.yawOut);
         }
     }
 

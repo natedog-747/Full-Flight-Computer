@@ -3,7 +3,8 @@
     "allow": [
       "WebFetch(domain:arduino-pico.readthedocs.io)",
       "Bash(python3 -c \":*)",
-      "Bash(pwsh -Command \":*)"
+      "Bash(pwsh -Command \":*)",
+      "Bash(grep -E \"\\\\.\\(md|txt|ini\\)$\")"
     ]
   }
 }

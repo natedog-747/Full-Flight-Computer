@@ -56,9 +56,13 @@ void ImuSensor::update() {
 
     // Gyro: same axis remapping, convert deg/s → rad/s for integration
     static const float DEG2RAD = M_PI / 180.0f;
+    static const float RAD2DEG = 180.0f / M_PI;
     float wx = SIGN_BODY_X * (int16_t)((buf[13] << 8) | buf[12]) / 16.0f * DEG2RAD; // sensor Wx → body Wx
     float wy = SIGN_BODY_Y * (int16_t)((buf[17] << 8) | buf[16]) / 16.0f * DEG2RAD; // sensor Wz → body Wy
     float wz = SIGN_BODY_Z * (int16_t)((buf[15] << 8) | buf[14]) / 16.0f * DEG2RAD; // sensor Wy → body Wz
+
+    pitchRate = wy * RAD2DEG;
+    yawRate   = wz * RAD2DEG;
 
     if (calibrating) {
         _accelSumX += ax; _accelSumY += ay; _accelSumZ += az;
