@@ -37,6 +37,7 @@ void setup() {
     pixel.setBrightness(50);
     pixel.show();
 
+    analogReadResolution(12);
     Wire.begin();
     if (!imuSensor.begin()) {
         while (1) vTaskDelay(portMAX_DELAY);
@@ -84,8 +85,11 @@ void loop() {
             Serial.print("  P: ");        Serial.print(control.dbgPitchP, 2);
             Serial.print("  I: ");        Serial.print(control.dbgPitchI, 2);
             Serial.print("  D: ");        Serial.print(control.dbgPitchD, 2);
+            float battV = (analogRead(A3) / 4095.0f) * 3.3f * 2.0f;
             Serial.print("  PSrv: ");     Serial.print(control.pitchOut);
-            Serial.print("  YSrv: ");     Serial.println(control.yawOut);
+            Serial.print("  YSrv: ");     Serial.print(control.yawOut);
+            Serial.print("  Batt: ");     Serial.print(battV, 2);
+            Serial.println("V");
         }
     }
 
