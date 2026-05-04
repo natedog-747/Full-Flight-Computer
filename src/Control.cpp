@@ -1,10 +1,5 @@
 #include "Control.h"
 #include <Arduino.h>
-#include <math.h>
-
-static constexpr float DEG2RAD = M_PI / 180.0f;
-static constexpr float RAD2DEG = 180.0f / M_PI;
-
 static inline float clampf(float v, float lo, float hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
@@ -26,12 +21,8 @@ void Control::update(float pitch, float pitchRate,
     if (dt <= 0.0f || dt > 0.5f) dt = 0.05f;  // guard first-call / micros() wrap
 
     // ── Throw-direction averaging ──────────────────────────────────────────────
-    // While still pre-launch, record yaw as a circular sum whenever accelX is
-    // above the launch threshold. atan2(sumSin, sumCos) gives the mean heading
-    // without wrap-around error.
     if (!inFlight && accelX >= LAUNCH_ACCEL_THRESHOLD) {
-        _yawSumSin += sinf(yaw * DEG2RAD);
-        _yawSumCos += cosf(yaw * DEG2RAD);
+        _yawSum += yaw;
         _yawSamples++;
     }
 
@@ -41,10 +32,8 @@ void Control::update(float pitch, float pitchRate,
     _prevInFlight = inFlight;
 
     if (justLaunched) {
-        // Lock yaw hold target to the circular mean of throw samples, or fall
-        // back to the current heading if no samples were collected.
         _yawTarget = (_yawSamples > 0)
-            ? atan2f(_yawSumSin, _yawSumCos) * RAD2DEG
+            ? _yawSum / (float)_yawSamples
             : yaw;
         // Clear integrators so there's no accumulated error from before launch.
         _pitchIntegral = 0.0f;
@@ -56,8 +45,7 @@ void Control::update(float pitch, float pitchRate,
         // throw starts fresh.
         _pitchIntegral = 0.0f;
         _yawIntegral   = 0.0f;
-        _yawSumSin  = 0.0f;
-        _yawSumCos  = 0.0f;
+        _yawSum     = 0.0f;
         _yawSamples = 0;
     }
 

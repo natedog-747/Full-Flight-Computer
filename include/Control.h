@@ -8,7 +8,7 @@ static constexpr float LAUNCH_ACCEL_THRESHOLD = 5.0f;  // m/s², mirrors FlightS
 // Pitch and yaw PID attitude hold with rate damping.
 //
 // Pitch holds pitchTarget (default -2°, slight nose-down).
-// Yaw holds the circular-mean heading recorded while accelX >= LAUNCH_ACCEL_THRESHOLD
+// Yaw holds the arithmetic-mean heading recorded while accelX >= LAUNCH_ACCEL_THRESHOLD
 // before entry into FLIGHT, capturing the average throw direction.
 //
 // PID output = Kp*error + Ki*integral(error) - Kd*rate
@@ -23,7 +23,7 @@ public:
     float pitchKd      =  0.5f;   // servo-deg per deg/s of pitch rate
     float pitchTarget  = 5.0f;   // hold target, degrees (negative = nose-down)
     bool  pitchReverse = false;
-    float pitchMaxDeg  = 70.0f;
+    float pitchMaxDeg  = 85.0f;
 
     // ── Yaw PID ───────────────────────────────────────────────────────
     float yawKp        =  5.0f;
@@ -55,9 +55,8 @@ private:
     float    _pitchIntegral = 0.0f;
     float    _yawIntegral   = 0.0f;
 
-    // Circular-mean accumulator for throw-direction yaw averaging
-    float    _yawSumSin  = 0.0f;
-    float    _yawSumCos  = 0.0f;
+    // Arithmetic-mean accumulator for throw-direction yaw averaging
+    float    _yawSum     = 0.0f;
     int      _yawSamples = 0;
     float    _yawTarget  = 0.0f;
 

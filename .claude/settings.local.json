@@ -4,7 +4,8 @@
       "WebFetch(domain:arduino-pico.readthedocs.io)",
       "Bash(python3 -c \":*)",
       "Bash(pwsh -Command \":*)",
-      "Bash(grep -E \"\\\\.\\(md|txt|ini\\)$\")"
+      "Bash(grep -E \"\\\\.\\(md|txt|ini\\)$\")",
+      "PowerShell(New-Item -ItemType Directory -Force -Path \"C:\\\\Users\\\\C27Nathan.Aldridge\\\\AppData\\\\Local\\\\Temp\\\\FlightComputer_Build\\\\FlightComputer\")"
     ]
   }
 }
